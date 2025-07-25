@@ -29,9 +29,9 @@ CoreAllocation:
 
 # 核心框架路径
 CoreFramework:
-  SmallCorePath: -1
-  MediumCorePath: 0
-  BigCorePath: 6
+  SmallCorePath: 0
+  MediumCorePath: 6
+  BigCorePath: -1
   SuperBigCorePath: -1
 
 # IO 调度器设置
@@ -89,11 +89,11 @@ powersave:
   # 频率
   Freq:
     SmallCoreMinFreq: 0
-    SmallCoreMaxFreq: 0
+    SmallCoreMaxFreq: 1996000
     MediumCoreMinFreq: 0
-    MediumCoreMaxFreq: 1996000
+    MediumCoreMaxFreq: 1401000
     BigCoreMinFreq: 0
-    BigCoreMaxFreq: 1401000
+    BigCoreMaxFreq: 0
     SuperBigCoreMinFreq: 0
     SuperBigCoreMaxFreq: 0
   # 频率限制
@@ -161,11 +161,11 @@ balance:
   # 频率
   Freq:
     SmallCoreMinFreq: 0
-    SmallCoreMaxFreq: 0
+    SmallCoreMaxFreq: 2400000
     MediumCoreMinFreq: 0
-    MediumCoreMaxFreq: 2400000
+    MediumCoreMaxFreq: 2841000
     BigCoreMinFreq: 0
-    BigCoreMaxFreq: 2841000
+    BigCoreMaxFreq: 0
     SuperBigCoreMinFreq: 0
     SuperBigCoreMaxFreq: 0
   # 频率限制
@@ -233,11 +233,11 @@ performance:
   # 频率
   Freq:
     SmallCoreMinFreq: 0
-    SmallCoreMaxFreq: 0
+    SmallCoreMaxFreq: 2745000
     MediumCoreMinFreq: 0
-    MediumCoreMaxFreq: 2745000
+    MediumCoreMaxFreq: 3213000
     BigCoreMinFreq: 0
-    BigCoreMaxFreq: 3213000
+    BigCoreMaxFreq: 0
     SuperBigCoreMinFreq: 0
     SuperBigCoreMaxFreq: 0
   # 频率限制
@@ -306,11 +306,11 @@ fast:
   # 频率
   Freq:
     SmallCoreMinFreq: 0
-    SmallCoreMaxFreq: 0
+    SmallCoreMaxFreq: "max"
     MediumCoreMinFreq: 0
     MediumCoreMaxFreq: "max"
     BigCoreMinFreq: 0
-    BigCoreMaxFreq: "max"
+    BigCoreMaxFreq: 0
     SuperBigCoreMinFreq: 0
     SuperBigCoreMaxFreq: 0
   # 频率限制

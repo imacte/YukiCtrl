@@ -30,8 +30,8 @@ CoreAllocation:
 # 核心框架路径 (适配天玑6080的 6小核+2大核 架构)
 CoreFramework:
   SmallCorePath: 0       
-  MediumCorePath: -1     
-  BigCorePath: 6        
+  MediumCorePath: 6     
+  BigCorePath: -1        
   SuperBigCorePath: -1   
 
 # IO 调度器设置
@@ -86,10 +86,10 @@ powersave:
   Freq:
     SmallCoreMinFreq: 500000
     SmallCoreMaxFreq: 1200000   
-    MediumCoreMinFreq: 0     
-    MediumCoreMaxFreq: 0     
-    BigCoreMinFreq: 600000
-    BigCoreMaxFreq: 1400000     
+    MediumCoreMinFreq: 600000     
+    MediumCoreMaxFreq: 140000     
+    BigCoreMinFreq: 0
+    BigCoreMaxFreq: 0     
     SuperBigCoreMinFreq: 0
     SuperBigCoreMaxFreq: 0
   # 频率限制
@@ -142,10 +142,10 @@ balance:
   Freq:
     SmallCoreMinFreq: 600000
     SmallCoreMaxFreq: 1800000    
-    MediumCoreMinFreq: 0   
-    MediumCoreMaxFreq: 0   
-    BigCoreMinFreq: 800000
-    BigCoreMaxFreq: 2000000     
+    MediumCoreMinFreq: 800000   
+    MediumCoreMaxFreq: 2000000   
+    BigCoreMinFreq: 0
+    BigCoreMaxFreq: 0     
     SuperBigCoreMinFreq: 0
     SuperBigCoreMaxFreq: 0
   # 频率限制
@@ -198,10 +198,10 @@ performance:
   Freq:
     SmallCoreMinFreq: 800000
     SmallCoreMaxFreq: 2000000      
-    MediumCoreMinFreq: 0     
-    MediumCoreMaxFreq: 0  
-    BigCoreMinFreq: 1000000
-    BigCoreMaxFreq: 2400000      
+    MediumCoreMinFreq: 1000000     
+    MediumCoreMaxFreq: 2400000  
+    BigCoreMinFreq: 0
+    BigCoreMaxFreq: 0      
     SuperBigCoreMinFreq: 0
     SuperBigCoreMaxFreq: 0
   # 频率限制
@@ -254,10 +254,10 @@ fast:
   Freq:
     SmallCoreMinFreq: 1200000
     SmallCoreMaxFreq: "max"
-    MediumCoreMinFreq: 0
-    MediumCoreMaxFreq: 0
-    BigCoreMinFreq: 1200000
-    BigCoreMaxFreq: "max"
+    MediumCoreMinFreq: 1200000
+    MediumCoreMaxFreq: "max"
+    BigCoreMinFreq: 0
+    BigCoreMaxFreq: 0
     SuperBigCoreMinFreq: 0
     SuperBigCoreMaxFreq: 0
   # 频率限制
