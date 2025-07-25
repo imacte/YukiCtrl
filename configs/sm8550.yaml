@@ -1,6 +1,6 @@
 # 元数据信息
 meta:
-  name: "骁龙8gen2"
+  name: "sm8550"
   author: "yuki"
   configVersion: 20
   loglevel: "INFO"
