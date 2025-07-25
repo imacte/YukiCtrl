@@ -42,10 +42,10 @@ IO_Settings:
 # EAS 调度器参数
 EasSchedulerValue:
   sched_min_granularity_ns: "2000000"
-  sched_nr_migrate: "3    SuperBigCoreMinFreq: 0
-    SuperBigCoreMaxFreq: 00"
+  sched_nr_migrate: "30"
   sched_wakeup_granularity_ns: "3200000"
   sched_schedstats: "0"
+
 
 # CPU 空闲设置
 CpuIdle:
