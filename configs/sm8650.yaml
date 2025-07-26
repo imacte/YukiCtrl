@@ -19,7 +19,7 @@ function:
 # App启动加速设置
 AppLaunchBoostSettings:
   FreqMulti: 1.2    # 频率提升倍率 (1.2 表示提升20%)
-  BoostRateMs: 200  # 持续时间 (毫秒)
+  BoostRateMs: 600  # 持续时间 (毫秒)
 
 # 核心分配设置
 CoreAllocation:
@@ -89,13 +89,13 @@ powersave:
   # 频率
   Freq:
     SmallCoreMinFreq: "min"
-    SmallCoreMaxFreq: 1500000
+    SmallCoreMaxFreq: 1574400
     MediumCoreMinFreq: "min"
-    MediumCoreMaxFreq: 1800000
+    MediumCoreMaxFreq: 1824000
     BigCoreMinFreq: "min"
-    BigCoreMaxFreq: 1700000
+    BigCoreMaxFreq: 1824000
     SuperBigCoreMinFreq: "min"
-    SuperBigCoreMaxFreq: 1700000
+    SuperBigCoreMaxFreq: 1708800
   # 频率限制
   Uclamp:
     UclampTopAppMin: "0"
@@ -161,14 +161,14 @@ balance:
     SuperBigCore: ""   
   # 频率
   Freq:
-    SmallCoreMinFreq: 600000
-    SmallCoreMaxFreq: 1800000
-    MediumCoreMinFreq: 800000
-    MediumCoreMaxFreq: 2200000
-    BigCoreMinFreq: 800000
-    BigCoreMaxFreq: 2200000
-    SuperBigCoreMinFreq: 1000000
-    SuperBigCoreMaxFreq: 2300000
+    SmallCoreMinFreq: 672000
+    SmallCoreMaxFreq: 1804800
+    MediumCoreMinFreq: 729600
+    MediumCoreMaxFreq: 2246400
+    BigCoreMinFreq: 844800
+    BigCoreMaxFreq: 2246400
+    SuperBigCoreMinFreq: 1017600
+    SuperBigCoreMaxFreq: 2304000
   # 频率限制
   Uclamp:
     UclampTopAppMin: "0"
@@ -233,14 +233,14 @@ performance:
     SuperBigCore: ""   
   # 频率
   Freq:
-    SmallCoreMinFreq: 1500000
-    SmallCoreMaxFreq: 2400000
-    MediumCoreMinFreq: 1800000
-    MediumCoreMaxFreq: 2600000
-    BigCoreMinFreq: 1900000
-    BigCoreMaxFreq: 2600000
-    SuperBigCoreMinFreq: 2200000
-    SuperBigCoreMaxFreq: 3200000  
+    SmallCoreMinFreq: 1574000
+    SmallCoreMaxFreq: max
+    MediumCoreMinFreq: 1824000
+    MediumCoreMaxFreq: 2630400
+    BigCoreMinFreq: 1920000
+    BigCoreMaxFreq: 2630400
+    SuperBigCoreMinFreq: 2246400
+    SuperBigCoreMaxFreq: max  
   # 频率限制
   Uclamp:
     UclampTopAppMin: "0"
@@ -305,13 +305,13 @@ fast:
     SuperBigCore: ""    
   # 频率
   Freq:
-    SmallCoreMinFreq: 1500000
+    SmallCoreMinFreq: 1459200
     SmallCoreMaxFreq: "max"
-    MediumCoreMinFreq: 1800000
+    MediumCoreMinFreq: 1824000
     MediumCoreMaxFreq: "max"
-    BigCoreMinFreq: 1900000
+    BigCoreMinFreq: 1920000
     BigCoreMaxFreq: "max"
-    SuperBigCoreMinFreq: 2200000
+    SuperBigCoreMinFreq: 2246400
     SuperBigCoreMaxFreq: "max"  
   # 频率限制
   Uclamp:

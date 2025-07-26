@@ -19,7 +19,7 @@ function:
 # App启动加速设置
 AppLaunchBoostSettings:
   FreqMulti: 1.2    # 频率提升倍率 (1.2 表示提升20%)
-  BoostRateMs: 200  # 持续时间 (毫秒)
+  BoostRateMs: 600  # 持续时间 (毫秒)
 
 # 核心分配设置 (适配天玑6080)
 CoreAllocation:
