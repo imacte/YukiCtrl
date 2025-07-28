@@ -100,8 +100,7 @@ YukiCtrl 提供四种性能模式：
 
 ### 前置要求
 
-1. **获取 Root 权限** - 推荐使用 [Magisk](https://github.com/topjohnwu/Magisk)
-2. **启用开发者选项** - 用于授予应用必要的系统权限
+1. **获取 Root 权限** 
 
 ### 安装步骤
 
@@ -243,17 +242,8 @@ YukiCtrl 支持独立的系统优化脚本：
 ## 📮 联系我们
 
 - **GitHub Issues** - [项目问题和建议](https://github.com/imacte/YukiCtrl/issues)
-- **QQ 群 1** - 1036909137 (用户交流)
-- **QQ 群 2** - 1055174076 (技术讨论)
-- **酷安** - [@yuki](https://www.coolapk.com/u/yuki) (项目动态)
-
----
-
-<div align="center">
-
-**🌟 如果这个项目对您有帮助，请给我们一个 Star！**
-
-<sub>让更多的 Android 用户体验到智能调度带来的性能提升</sub>
+- **QQ 群 1** - 1036909137 
+- **QQ 群 2** - 1055174076 
 
 ---
 
