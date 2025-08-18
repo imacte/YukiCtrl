@@ -23,9 +23,7 @@ AppLaunchBoostSettings:
 
 # 核心分配设置
 CoreAllocation:
-  cpusetCore: "0-7"
-  cpuctlUclampBoostMin: "0"
-  cpuctlUclampBoostMax: "100"
+  CpuSetCore: "0-7"
 
 # 核心框架路径
 CoreFramework:
@@ -81,7 +79,7 @@ pGovPath:
 powersave:
   # 调速器
   Governor:
-    global: "walt"
+    Global: "walt"
     SmallCore: ""
     MediumCore: ""
     BigCore: ""
@@ -153,7 +151,7 @@ powersave:
 balance:
   # 调速器
   Governor:
-    global: "walt"
+    Global: "walt"
     SmallCore: ""
     MediumCore: ""
     BigCore: ""
@@ -225,7 +223,7 @@ balance:
 performance:
   # 调速器
   Governor:
-    global: "walt"
+    Global: "walt"
     SmallCore: ""
     MediumCore: ""
     BigCore: ""
@@ -298,7 +296,7 @@ performance:
 fast:
   # 调速器
   Governor:
-    global: "walt"
+    Global: "walt"
     SmallCore: ""
     MediumCore: ""
     BigCore: ""

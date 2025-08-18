@@ -23,9 +23,7 @@ AppLaunchBoostSettings:
 
 # 核心分配设置 (SM8150: 4小核 + 3中核 + 1大核)
 CoreAllocation:
-  cpusetCore: "4-7"
-  cpuctlUclampBoostMin: "0"
-  cpuctlUclampBoostMax: "100"
+  CpuSetCore: "4-7"
 
 # 核心框架路径 (SM8150: CPU0-3 小核, CPU4-6 中核, CPU7 大核)
 CoreFramework:
@@ -81,7 +79,7 @@ pGovPath:
 powersave:
   # 调速器
   Governor:
-    global: "schedutil"
+    Global: "schedutil"
     SmallCore: ""
     MediumCore: ""
     BigCore: ""
@@ -153,7 +151,7 @@ powersave:
 balance:
   # 调速器
   Governor:
-    global: "schedutil"
+    Global: "schedutil"
     SmallCore: ""
     MediumCore: ""
     BigCore: ""
@@ -225,7 +223,7 @@ balance:
 performance:
   # 调速器
   Governor:
-    global: "schedutil"
+    Global: "schedutil"
     SmallCore: ""
     MediumCore: ""
     BigCore: ""
@@ -297,7 +295,7 @@ performance:
 fast:
   # 调速器
   Governor:
-    global: "performance"
+    Global: "performance"
     SmallCore: ""
     MediumCore: ""
     BigCore: ""
