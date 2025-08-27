@@ -78,7 +78,7 @@ pGovPath:
 powersave:
   # 调速器
   Governor: 
-    Global: "schedutil"
+    Global: "conservative"
     SmallCore: ""
     MediumCore: "" 
     BigCore: ""
@@ -86,11 +86,11 @@ powersave:
   # 频率
   Freq:
     SmallCoreMinFreq: 0
-    SmallCoreMaxFreq: 1459200
+    SmallCoreMaxFreq: 1555200
     MediumCoreMinFreq: 0
-    MediumCoreMaxFreq: 1785600
+    MediumCoreMaxFreq: 1536000
     BigCoreMinFreq: 0
-    BigCoreMaxFreq: 1593600
+    BigCoreMaxFreq: 1478400
     SuperBigCoreMinFreq: 0
     SuperBigCoreMaxFreq: 0
   # 频率限制
