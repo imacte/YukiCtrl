@@ -1,0 +1,253 @@
+# 元数据信息
+meta:
+  name: "mt6991"
+  author: "yuki"
+  configVersion: 20
+  loglevel: "INFO"
+
+# 主要功能开关
+function:
+  AffinitySetter: false
+  CpuIdleScaling_Governor: false
+  EasScheduler: true
+  cpuset: true
+  LoadBalancing: true
+  EnableFeas: false
+  AdjIOScheduler: true
+  AppLaunchBoost: false
+
+# App启动加速设置
+AppLaunchBoostSettings:
+  FreqMulti: 1.25
+  BoostRateMs: 600
+
+# 核心分配设置
+CoreAllocation:
+  CpuSetCore: "4-7"
+
+# 核心框架路径
+CoreFramework:
+  SmallCorePath: 0
+  MediumCorePath: 4
+  BigCorePath: 7
+  SuperBigCorePath: -1 
+
+# IO 调度器设置
+IO_Settings:
+  Scheduler: "mq-deadline"
+  IO_optimization: true
+
+# EAS 调度器参数 (原 EasSchedulerVaule)
+EasSchedulerValue:
+  sched_min_granularity_ns: "2000000"
+  sched_nr_migrate: "30"
+  sched_wakeup_granularity_ns: "3200000"
+  sched_schedstats: "0"
+
+# CPU 空闲设置
+CpuIdle:
+  current_governor: "menu"
+
+# Cpuset 分组
+Cpuset:
+  top_app: "0-7"
+  foreground: "0-6"
+  restricted: "0-5"
+  system_background: "1-2"
+  background: "0-2"
+
+# 总线路径
+Bus_dcvs_Path:
+  CPUllccminPath: ""
+  CPUllccmaxPath: ""
+  CPUddrminPath: ""
+  CPUddrmaxPath: ""
+
+# 调速器参数路径
+pGovPath:
+  schedutil:
+    path1: "down_rate_limit_us" 
+    path2: "up_rate_limit_us"   
+    path3: ""
+
+# --- 性能模式 ---
+
+# 省电模式
+powersave:
+  Governor:
+    Global: "schedutil"
+    SmallCore: ""
+    MediumCore: ""
+    BigCore: ""
+    SuperBigCore: ""
+  Freq:
+    SmallCoreMinFreq: 0
+    SmallCoreMaxFreq: 2000000
+    MediumCoreMinFreq: 0
+    MediumCoreMaxFreq: 2300000
+    BigCoreMinFreq: 0
+    BigCoreMaxFreq: 2400000
+    SuperBigCoreMinFreq: 0
+    SuperBigCoreMaxFreq: 0
+  Uclamp:
+    UclampTopAppMin: "0"
+    UclampTopAppMax: "100"
+    UclampTopApplatency_sensitive: "0"
+    UclampForeGroundMin: "0"
+    UclampForeGroundMax: "60"
+    UclampBackGroundMin: "0"
+    UclampBackGroundMax: "40"
+  Bus_dcvs:
+    CPUllccmin: ""
+    CPUllccmax: ""
+    CPUddrmin: ""
+    CPUddrmax: ""
+  Govsets:
+    schedutil:
+      path1:
+        SmallCore: "0" 
+        MediumCore: "0"
+        BigCore: "0"
+        SuperBigCore: ""
+      path2:
+        SmallCore: "0" 
+        MediumCore: "0"
+        BigCore: "0"
+        SuperBigCore: ""
+  Other:
+    ufsClkGate: true
+
+# 均衡模式
+balance:
+  Governor:
+    Global: "schedutil"
+    SmallCore: ""
+    MediumCore: ""
+    BigCore: ""
+    SuperBigCore: ""
+  Freq:
+    SmallCoreMinFreq: 0
+    SmallCoreMaxFreq: 2100000
+    MediumCoreMinFreq: 0
+    MediumCoreMaxFreq: 2600000
+    BigCoreMinFreq: 0
+    BigCoreMaxFreq: 2600000
+    SuperBigCoreMinFreq: 0
+    SuperBigCoreMaxFreq: 0
+  Uclamp:
+    UclampTopAppMin: "0"
+    UclampTopAppMax: "100"
+    UclampTopApplatency_sensitive: "0"
+    UclampForeGroundMin: "0"
+    UclampForeGroundMax: "60"
+    UclampBackGroundMin: "0"
+    UclampBackGroundMax: "40"
+  Bus_dcvs:
+    CPUllccmin: ""
+    CPUllccmax: ""
+    CPUddrmin: ""
+    CPUddrmax: ""
+  Govsets:
+    schedutil:
+      path1:
+        SmallCore: "0"
+        MediumCore: "0"
+        BigCore: "0"
+        SuperBigCore: ""
+      path2:
+        SmallCore: "0"
+        MediumCore: "0"
+        BigCore: "0"
+        SuperBigCore: ""
+  Other:
+    ufsClkGate: true
+
+# 性能模式
+performance:
+  Governor:
+    Global: "schedutil"
+    SmallCore: ""
+    MediumCore: ""
+    BigCore: ""
+    SuperBigCore: ""
+  Freq:
+    SmallCoreMinFreq: 0
+    SmallCoreMaxFreq: 2400000
+    MediumCoreMinFreq: 0
+    MediumCoreMaxFreq: 3000000
+    BigCoreMinFreq: 0
+    BigCoreMaxFreq: 3300000
+    SuperBigCoreMinFreq: 0
+    SuperBigCoreMaxFreq: 0
+  Uclamp:
+    UclampTopAppMin: "0"
+    UclampTopAppMax: "100"
+    UclampTopApplatency_sensitive: "0"
+    UclampForeGroundMin: "0"
+    UclampForeGroundMax: "70"
+    UclampBackGroundMin: "0"
+    UclampBackGroundMax: "40"
+  Bus_dcvs:
+    CPUllccmin: ""
+    CPUllccmax: ""
+    CPUddrmin: ""
+    CPUddrmax: ""
+  Govsets:
+    schedutil:
+      path1:
+        SmallCore: "0"
+        MediumCore: "0"
+        BigCore: "0"
+        SuperBigCore: ""
+      path2:
+        SmallCore: "0"
+        MediumCore: "0"
+        BigCore: "0"
+        SuperBigCore: ""
+  Other:
+    ufsClkGate: false
+
+# 极速模式
+fast:
+  Governor:
+    Global: "schedutil"
+    SmallCore: ""
+    MediumCore: ""
+    BigCore: ""
+    SuperBigCore: ""
+  Freq:
+    SmallCoreMinFreq: 0
+    SmallCoreMaxFreq: "max" 
+    MediumCoreMinFreq: 0
+    MediumCoreMaxFreq: 3300000
+    BigCoreMinFreq: 0
+    BigCoreMaxFreq: 3730000
+    SuperBigCoreMinFreq: 0
+    SuperBigCoreMaxFreq: 0
+  Uclamp:
+    UclampTopAppMin: "10"
+    UclampTopAppMax: "100"
+    UclampTopApplatency_sensitive: "1"
+    UclampForeGroundMin: "0"
+    UclampForeGroundMax: "70"
+    UclampBackGroundMin: "0"
+    UclampBackGroundMax: "40"
+  Bus_dcvs:
+    CPUllccmin: ""
+    CPUllccmax: ""
+    CPUddrmin: ""
+    CPUddrmax: ""
+  Govsets:
+    schedutil:
+      path1:
+        SmallCore: "0"
+        MediumCore: "0"
+        BigCore: "0"
+        SuperBigCore: ""
+      path2:
+        SmallCore: "0"
+        MediumCore: "0"
+        BigCore: "0"
+        SuperBigCore: ""
+  Other:
+    ufsClkGate: true
