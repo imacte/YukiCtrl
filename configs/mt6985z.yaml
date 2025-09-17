@@ -7,7 +7,7 @@ meta:
 
 # 主要功能开关 
 function:
-  AffinitySetter: true
+  AffinitySetter: false
   CpuIdleScaling_Governor: false
   EasScheduler: true
   cpuset: true
