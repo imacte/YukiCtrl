@@ -2,7 +2,6 @@
 meta:
   name: "mt6891"
   author: "yuki (adapted for MT6891)"
-  configVersion: 20
   loglevel: "INFO"
 
 # 主要功能开关

@@ -2,7 +2,6 @@
 meta:
   name: "mt6983"
   author: "yuki"
-  configVersion: 20
   loglevel: "INFO"
 
 # 主要功能开关
