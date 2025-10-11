@@ -6,7 +6,7 @@
 
 [![Android](https://img.shields.io/badge/platform-Android-3DDC84.svg?style=for-the-badge&logo=android)](https://developer.android.com/)
 [![Kotlin](https://img.shields.io/badge/language-Kotlin-7F52FF.svg?style=for-the-badge&logo=kotlin)](https://kotlinlang.org/)
-[![C++](https://img.shields.io/badge/core-C++-%23f34b7d.svg?style=for-the-badge&logo=cplusplus)](https://en.wikipedia.org/wiki/C++)
+[![Rust](https://img.shields.io/badge/core-Rust-%23dea584.svg?style=for-the-badge&logo=rust)](https://www.rust-lang.org/)
 [![AArch64](https://img.shields.io/badge/arch-AArch64-FF6B6B.svg?style=for-the-badge)](https://en.wikipedia.org/wiki/AArch64)
 [![Root Required](https://img.shields.io/badge/Root-Required-FF5722.svg?style=for-the-badge)](https://magiskmanager.com/)
 
@@ -82,7 +82,7 @@ YukiCtrl 提供四种性能模式：
 
 ### 🛠️ 调度核心 (YukiCpuScheduler)
 
-YukiCtrl 的核心是由一个高性能的 C++ 守护进程 **YukiCpuScheduler** 驱动的。它负责执行所有底层的系统调优指令，以极低的资源占用实现高效的性能控制。
+YukiCtrl 的核心是由一个rust守护进程 **YukiCpuScheduler** 驱动的。它负责执行所有底层的系统调优指令，以极低的资源占用实现高效的性能控制。
 
 #### 核心特性
 
