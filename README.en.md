@@ -86,7 +86,7 @@ The core of YukiCtrl is driven by a rust daemon, **YukiCpuScheduler**. It is res
 
 #### Core Features
 
-  * **High-Performance C++ Implementation**: Extremely low system resource usage and minimal power consumption.
+  * **High-Performance rust Implementation**: Extremely low system resource usage and minimal power consumption.
   * **Real-time Configuration Monitoring**: Supports configuration hot-reloading, allowing mode switches without a reboot.
   * **Multi-level Optimization Strategy**: Comprehensive tuning from CPU frequency to bus speed.
   * **Smart App Launch Boost**: Temporarily boosts performance when an app starts to speed up loading times.
