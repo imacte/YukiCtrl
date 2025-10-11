@@ -316,11 +316,11 @@ performance:
 
 ## 📊 项目统计
 
-<div align="center"\>
+<div align="center">
 
 [![Star History Chart](https://api.star-history.com/svg?repos=imacte/YukiCtrl&type=Date)](https://star-history.com/#imacte/YukiCtrl&Date)
 
-</div\>
+</div>
 
 ## 📮 联系我们
 
@@ -330,9 +330,9 @@ performance:
 
 -----
 
-<div align="center"\>
+<div align="center">
 
-<sub\>📅 文档更新时间：2025年10月11日\</sub\><br>
-<sub\>🚀 YukiCtrl - 让每一台 Android 设备都拥有最佳的性能体验\</sub\>
+<sub>📅 文档更新时间：2025年10月11日\</sub><br>
+<sub>🚀 YukiCtrl - 让每一台 Android 设备都拥有最佳的性能体验\</sub>
 
-</div\>
+</div>
