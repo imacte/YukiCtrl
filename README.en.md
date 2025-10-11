@@ -4,11 +4,11 @@
 
 <div align="center"\>
 
-[](https://developer.android.com/)
-[](https://kotlinlang.org/)
-[](https://en.wikipedia.org/wiki/C++)
-[](https://en.wikipedia.org/wiki/AArch64)
-[](https://magiskmanager.com/)
+[![Android](https://img.shields.io/badge/platform-Android-3DDC84.svg?style=for-the-badge&logo=android)](https://developer.android.com/)
+[![Kotlin](https://img.shields.io/badge/language-Kotlin-7F52FF.svg?style=for-the-badge&logo=kotlin)](https://kotlinlang.org/)
+[![C++](https://img.shields.io/badge/core-C++-%23f34b7d.svg?style=for-the-badge&logo=cplusplus)](https://en.wikipedia.org/wiki/C++)
+[![AArch64](https://img.shields.io/badge/arch-AArch64-FF6B6B.svg?style=for-the-badge)](https://en.wikipedia.org/wiki/AArch64)
+[![Root Required](https://img.shields.io/badge/Root-Required-FF5722.svg?style=for-the-badge)](https://magiskmanager.com/)
 
 **🚀 An Intelligent CPU Scheduling System - Modern Android App + High-Performance C++ Daemon**
 
