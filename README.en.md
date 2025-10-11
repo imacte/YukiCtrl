@@ -320,7 +320,7 @@ performance:
 
 [![Star History Chart](https://api.star-history.com/svg?repos=imacte/YukiCtrl&type=Date)](https://star-history.com/#imacte/YukiCtrl&Date)
 
-</div\>
+</div>
 
 ## 📮 Contact Us
 
