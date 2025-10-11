@@ -2,7 +2,7 @@
 
 # YukiCtrl - Intelligent CPU Scheduling Controller
 
-\<div align="center"\>
+<div align="center"\>
 
 [](https://developer.android.com/)
 [](https://kotlinlang.org/)
@@ -12,7 +12,7 @@
 
 **🚀 An Intelligent CPU Scheduling System - Modern Android App + High-Performance C++ Daemon**
 
-\</div\>
+</div\>
 
 -----
 

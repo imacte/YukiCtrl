@@ -2,7 +2,7 @@
 
 # YukiCtrl - 智能 CPU 调度控制器
 
-\<div align="center"\>
+<div align="center"\>
 
 [](https://developer.android.com/)
 [](https://kotlinlang.org/)
@@ -12,7 +12,7 @@
 
 **🚀 智能 CPU 调度系统 - 现代化 Android 应用 + 高性能 C++ 守护进程**
 
-\</div\>
+</div\>
 
 -----
 
