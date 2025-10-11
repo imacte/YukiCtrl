@@ -330,7 +330,7 @@ performance:
 
 <div align="center">
 
-<sub>📅 Document Updated: 2025-10-11\<sub><br>
-<sub>🚀 YukiCtrl - Giving every Android device the best performance experience\<sub>
+<sub>📅 Document Updated: 2025-10-11</sub><br>
+<sub>🚀 YukiCtrl - Giving every Android device the best performance experience</sub>
 
 </div>

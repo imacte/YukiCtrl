@@ -332,7 +332,7 @@ performance:
 
 <div align="center">
 
-<sub>📅 文档更新时间：2025年10月11日\<sub><br>
-<sub>🚀 YukiCtrl - 让每一台 Android 设备都拥有最佳的性能体验\<sub>
+<sub>📅 文档更新时间：2025年10月11日</sub><br>
+<sub>🚀 YukiCtrl - 让每一台 Android 设备都拥有最佳的性能体验</sub>
 
 </div>
