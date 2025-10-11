@@ -10,7 +10,7 @@
 [![AArch64](https://img.shields.io/badge/arch-AArch64-FF6B6B.svg?style=for-the-badge)](https://en.wikipedia.org/wiki/AArch64)
 [![Root Required](https://img.shields.io/badge/Root-Required-FF5722.svg?style=for-the-badge)](https://magiskmanager.com/)
 
-**🚀 An Intelligent CPU Scheduling System - Modern Android App + High-Performance C++ Daemon**
+**🚀 An Intelligent CPU Scheduling System - Modern Android App + High-Performance rust Daemon**
 
 </div>
 
@@ -18,7 +18,7 @@
 
 ## 📋 About The Project
 
-**YukiCtrl** is a powerful Android CPU scheduling control application, consisting of a modern **Kotlin + Jetpack Compose** user interface and a high-performance **C++ daemon (YukiCpuScheduler)**. Through advanced scheduling algorithms and highly configurable performance models, it dynamically adjusts CPU frequency, bus speed, core allocation strategies, and fine-tunes governor parameters for different usage scenarios to achieve the optimal balance between performance and power efficiency.
+**YukiCtrl** is a powerful Android CPU scheduling control application, consisting of a modern **Kotlin + Jetpack Compose** user interface and a high-performance **rust daemon (YukiCpuScheduler)**. Through advanced scheduling algorithms and highly configurable performance models, it dynamically adjusts CPU frequency, bus speed, core allocation strategies, and fine-tunes governor parameters for different usage scenarios to achieve the optimal balance between performance and power efficiency.
 
 ### ✨ Key Features
 

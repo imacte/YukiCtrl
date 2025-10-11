@@ -10,7 +10,7 @@
 [![AArch64](https://img.shields.io/badge/arch-AArch64-FF6B6B.svg?style=for-the-badge)](https://en.wikipedia.org/wiki/AArch64)
 [![Root Required](https://img.shields.io/badge/Root-Required-FF5722.svg?style=for-the-badge)](https://magiskmanager.com/)
 
-**🚀 智能 CPU 调度系统 - 现代化 Android 应用 + 高性能 C++ 守护进程**
+**🚀 智能 CPU 调度系统 - 现代化 Android 应用 + 高性能 rust 守护进程**
 
 </div>
 
