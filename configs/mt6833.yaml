@@ -2,6 +2,7 @@
 meta:
   name: "mt6833"
   author: "yuki"
+  language: "en"
   loglevel: "INFO"
 
 # 主要功能开关

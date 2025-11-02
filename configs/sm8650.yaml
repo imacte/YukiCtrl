@@ -2,6 +2,7 @@
 meta:
   name: "sm8650"
   author: "yuki"
+  language: "en"
   loglevel: "INFO"
 
 # 主要功能开关
