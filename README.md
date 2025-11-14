@@ -1,4 +1,4 @@
-[Read this document in English](README.en.md)
+[Read this document in English](https://www.google.com/search?q=README.en.md)
 
 # YukiCtrl - 智能 CPU 调度控制器
 
@@ -46,7 +46,7 @@ YukiCtrl 提供四种性能模式：
 | **均衡 (Balance)** | ⚖️ | 性能与功耗的最佳平衡点。 | 日常使用、社交应用。 |
 | **性能 (Performance)** | ⚡ | 优先性能，适度增加功耗。 | 大型应用、轻度游戏。 |
 | **极速 (Fast)** | 🚀 | 最大性能释放，忽略功耗。 | 重度游戏、性能测试。 |
-| **fas (Fas)** |  | 兼容fas模块。 |  |
+| **fas (Fas)** |  | **兼容模式**。释放 CPU 频率控制权（仅修改节点权限），用于兼容 FAS 等外部模块。 | 配合其他调度模块使用。 |
 
 ## 📱 应用功能详解
 
@@ -87,9 +87,9 @@ YukiCtrl 的核心是由一个rust守护进程 **YukiCpuScheduler** 驱动的。
 #### 核心特性
 
   * **高性能rust实现**: 极低的系统资源占用，运行功耗极低。
-  * **实时配置监听**: 支持配置文件热重载，切换模式无需重启。
+  * **实时配置监听**: 支持配置文件（`config.yaml`）和模式文件（`mode.txt`）热重载，切换模式无需重启。
   * **多层次优化策略**: 从 CPU 频率到总线速度的全方位调优。
-  * **智能应用启动加速**: 应用启动时的临时性能提升，加快加载速度。
+  * **智能应用启动加速**: 监控 `top-app` cgroup 变化，实现应用启动时的临时性能提升，加快加载速度。
 
 #### 调度功能
 
@@ -99,10 +99,10 @@ YukiCtrl 的核心是由一个rust守护进程 **YukiCpuScheduler** 驱动的。
 | **调速器管理** | 支持 schedutil、walt 等多种调速器及其内部参数的精细化调整。 |
 | **核心分配 (Cpuset)** | 为前台、后台等不同任务组分配合适的 CPU 核心，是功耗和性能管理的关键。 |
 | **总线频率优化** | 精细控制SoC内部数据总线（LLCC缓存/DDR内存）的频率，对系统响应速度和功耗有显著影响。 |
-| **I/O 调度优化** | 优化存储设备的访问策略，可自定义I/O调度器。 |
+| **I/O 调度优化** | 优化存储设备的访问策略，可自定义I/O调度器及关闭iostats等。 |
 | **EAS 调度器调优** | 针对支持 EAS (Energy Aware Scheduling) 的内核进行高级参数优化。 |
-| **核心绑定优化** | 通过 `AffinitySetter` 对系统关键进程进行静态核心绑定，显著提升UI流畅度。 |
-| **冲突管理** | 自动禁用大部分主流的用户态和内核态性能增强（如 touch boost），确保调度策略的唯一性。 |
+| **核心绑定优化** | **(AffinitySetter)** 自动创建 `yuki` 和 `Rubbish` cgroup，将系统关键进程（如 `systemui`, `surfaceflinger`）绑定到 `yuki` 组，并将干扰进程（如 `kswapd0`, `logcat`）隔离到 `Rubbish` 组，显著提升UI流畅度。 |
+| **冲突管理** | 自动禁用大部分主流的用户态和内核态性能增强（如 FEAS，在非极速模式下），确保调度策略的唯一性。 |
 
 -----
 
@@ -112,19 +112,18 @@ YukiCtrl 使用 YAML 格式的配置文件，允许用户进行深度自定义�
 
 #### 1️⃣ 元信息 (`meta`)
 
-这部分定义了配置文件的基本信息。
+这部分定义了守护进程的基本行为。
 
 ```yaml
 meta:
-  name: "YukiCpuScheduler Profile"
-  author: "yuki"
   loglevel: "INFO"
+  language: "en"
 ```
 
 | 字段 | 类型 | 描述 |
 | :--- | :--- | :--- |
-| `configVersion` | number | **至关重要**。此版本号必须与程序要求的版本完全一致。 |
-| `loglevel` | string | 日志记录详细程度。可选值：`DEBUG`, `INFO`, `WARNING`, `ERROR`。 |
+| `loglevel` | string | 日志记录详细程度。可选值：`DEBUG`, `INFO`, `WARN`, `ERROR`。 |
+| `language` | string | 守护进程日志的语言。目前支持 `en` (英语) 和 `zh` (中文)。 |
 
 #### 2️⃣ 功能开关 (`function`)
 
@@ -132,7 +131,6 @@ meta:
 
 ```yaml
 function:
-  DisableQcomGpu: true
   AffinitySetter: true
   CpuIdleScaling_Governor: false
   EasScheduler: true
@@ -145,16 +143,31 @@ function:
 
 | 功能 | 描述 |
 | :--- | :--- |
-| `AffinitySetter` | **(推荐)** **hyperos3勿开**，对系统关键进程进行静态核心绑定，**显著提升UI流畅度**。 |
-| `CpuIdleScaling_Governor`| 是否允许自定义 CPU Idle 调速器。 |
-| `EasScheduler` | 如果内核支持 **EAS**，开启可应用优化参数。 |
-| `cpuset` | **(推荐)** 启用 Cpuset 功能，为不同任务组分配合适的 CPU 核心。 |
+| `AffinitySetter` | **(推荐)** **hyperos3勿开**，启用核心绑定优化（`yuki` 和 `Rubbish` cgroup）。 |
+| `CpuIdleScaling_Governor`| 是否允许自定义 CPU Idle 调速器（见 `CpuIdle` 部分）。 |
+| `EasScheduler` | 如果内核支持 **EAS**，开启可应用优化参数（见 `EasSchedulerValue` 部分）。 |
+| `cpuset` | **(推荐)** 启用 Cpuset 功能，为不同任务组分配合适的 CPU 核心（见 `Cpuset` 部分）。 |
 | `LoadBalancing` | 启用 CFS 负载均衡优化，让任务在核心间的分配更合理。 |
-| `EnableFeas` | 是否在**极速模式**下尝试启用内核的 FEAS 功能。 |
-| `AdjIOScheduler` | 是否允许自定义 I/O 调速器。 |
-| `AppLaunchBoost` | **(推荐)** 启用应用启动加速，加快加载速度。 |
+| `EnableFeas` | 是否在\*\*极速模式(fast)\*\*下尝试启用内核的 FEAS 功能。 |
+| `AdjIOScheduler` | 是否允许自定义 I/O 调速器（见 `IO_Settings` 部分）。 |
+| `AppLaunchBoost` | **(推荐)** 启用应用启动加速，加快加载速度（见 `AppLaunchBoostSettings` 部分）。 |
 
-#### 3️⃣ 核心框架与分配 (`CoreFramework` & `CoreAllocation`)
+#### 3️⃣ 应用启动加速 (`AppLaunchBoostSettings`)
+
+需要 `function.AppLaunchBoost` 为 `true`。
+
+```yaml
+AppLaunchBoostSettings:
+  FreqMulti: 1.2
+  BoostRateMs: 200
+```
+
+| 字段 | 类型 | 描述 |
+| :--- | :--- | :--- |
+| `FreqMulti` | float | 启动时，CPU 最大频率在**当前模式**的基础上乘以的倍率。`1.2` 表示提升 20%。 |
+| `BoostRateMs` | int | 启动加速的持续时间（毫秒）。 |
+
+#### 4️⃣ 核心框架与分配 (`CoreFramework` & `CoreAllocation`)
 
 此部分定义了设备的物理核心架构，是所有频率和核心控制功能的基础，**必须正确配置！**
 
@@ -166,13 +179,70 @@ function:
       BigCorePath: 5
       SuperBigCorePath: 7
     ```
-  * **核心分配 (`CoreAllocation`)**: 为 `AffinitySetter` 功能提供参数，指定将系统关键进程绑定到的核心范围。
+  * **核心分配 (`CoreAllocation`)**: 为 `AffinitySetter` 功能提供参数，指定将系统关键进程（`yuki` cgroup）绑定到的核心范围。
     ```yaml
     CoreAllocation:
-      cpusetCore: "2-7"
+      CpuSetCore: "2-7"
     ```
 
-#### 4️⃣ 总线频率控制 (`Bus_dcvs_Path` & `Bus_dcvs`)
+#### 5️⃣ I/O 调度 (`IO_Settings`)
+
+```yaml
+IO_Settings:
+  Scheduler: "none"
+  Io_optimization: true
+```
+
+| 字段 | 类型 | 描述 |
+| :--- | :--- | :--- |
+| `Scheduler` | string | **(需 `AdjIOScheduler` 开启)** 设置 I/O 调度器，例如 "mq-deadline", "none"。 |
+| `Io_optimization` | bool | 是否关闭 `iostats` 和 `nomerges` 等选项以优化 I/O 性能。 |
+
+#### 6️⃣ EAS 调度器 (`EasSchedulerValue`)
+
+需要 `function.EasScheduler` 为 `true`。
+
+```yaml
+EasSchedulerValue:
+  sched_min_granularity_ns: "1000000"
+  sched_nr_migrate: "32"
+  sched_wakeup_granularity_ns: "1000000"
+  sched_schedstats: "0"
+```
+
+#### 7️⃣ CPU Idle (`CpuIdle`)
+
+需要 `function.CpuIdleScaling_Governor` 为 `true`。
+
+```yaml
+CpuIdle:
+  current_governor: "ladder"
+```
+
+  * `current_governor`: 设置 CPU Idle 调速器。
+
+#### 8️⃣ Cpuset (核心分组)
+
+需要 `function.cpuset` 为 `true`。它将不同类型的任务组限制在指定的 CPU 核心上运行。
+
+```yaml
+Cpuset:
+  top_app: "0-7"
+  foreground: "0-7"
+  background: "0-3"
+  system_background: "0-2"
+  restricted: "0-1"
+```
+
+| 字段 | 描述 | 建议值 |
+| :--- | :--- | :--- |
+| `top_app` | 当前在前台运行的应用。 | 应分配所有核心，如 `"0-7"`。 |
+| `foreground` | 前台服务和可见的应用。 | 也应分配所有或大部分核心。 |
+| `background` | 后台运行的应用和服务。 | **应限制在能效核心**，如 `"0-3"`，以节省功耗。 |
+| `system_background` | 系统后台服务。 | 同样应限制在能效核心。 |
+| `restricted` | 被系统限制的后台应用。 | 应分配最少的核心。 |
+
+#### 9️⃣ 总线频率控制 (`Bus_dcvs_Path` & `Bus_dcvs`)
 
 此功能允许精细控制SoC内部数据总线（LLCC缓存/DDR内存）的频率。配置分为两步：
 
@@ -194,7 +264,7 @@ function:
         CPUddrmax: 3196000
     ```
 
-#### 5️⃣ 动态调速器参数 (`pGovPath` & `Govsets`)
+#### 🔟 动态调速器参数 (`pGovPath` & `Govsets`)
 
 此功能允许对 CPU 调速器的内部参数进行精细化调整。配置也分为两步：
 
@@ -217,19 +287,7 @@ function:
           path1: "95"     # 对应 target_loads
     ```
 
-#### 6️⃣ Cpuset (核心分组)
-
-需要 `function.cpuset` 为 `true`。它将不同类型的任务组限制在指定的 CPU 核心上运行。
-
-| 字段 | 描述 | 建议值 |
-| :--- | :--- | :--- |
-| `top_app` | 当前在前台运行的应用。 | 应分配所有核心，如 `"0-7"`。 |
-| `foreground` | 前台服务和可见的应用。 | 也应分配所有或大部分核心。 |
-| `background` | 后台运行的应用和服务。 | **应限制在能效核心**，如 `"0-3"`，以节省功耗。 |
-| `system_background` | 系统后台服务。 | 同样应限制在能效核心。 |
-| `restricted` | 被系统限制的后台应用。 | 应分配最少的核心。 |
-
-#### 7️⃣ 功耗模型详解 (以 `performance` 模式为例)
+#### 1️⃣1️⃣ 功耗模型详解 (以 `performance` 模式为例)
 
 一个完整的性能模式，是由以下**六个模块**共同定义的。您可以自由组合，打造最适合您的模式。
 
@@ -242,6 +300,34 @@ performance:
   Govsets: { ... }  # 调速器参数：精细化调整调速器的具体行为
   Other: { ... }    # 其他设置
 ```
+
+**详细说明：**
+
+  * **`Governor` (调速器)**:
+      * `Global`: "schedutil" (全局默认)
+      * `SmallCore`: "" (为空则使用全局)
+      * ... (其他核心簇)
+  * **`Freq` (CPU频率)**:
+      * `SmallCoreMinFreq`: 0 (或 "min")
+      * `SmallCoreMaxFreq`: 9999999 (或 "max")
+      * ... (其他核心簇)
+      * **注意**: 频率字段支持 `"min"` 和 `"max"` 字符串，守护进程会将其分别转换为 `0` 和 `9999999` (或 `10000000`)。
+  * **`Uclamp` (Uclamp 设置)**:
+      * `UclampTopAppMin`: "0"
+      * `UclampTopAppMax`: "100"
+      * `UclampTopApplatency_sensitive`: "0"
+      * `UclampForeGroundMin`: "0"
+      * `UclampForeGroundMax`: "70"
+      * `UclampBackGroundMin`: "0"
+      * `UclampBackGroundMax`: "50"
+  * **`Bus_dcvs` (总线频率)**:
+      * `CPUllccmin`: ""
+      * `CPUllccmax`: ""
+      * ...
+  * **`Govsets` (调速器参数)**:
+      * (结构见上文)
+  * **`Other` (其他设置)**:
+      * `UfsClkGate`: false (是否禁用 UFS 时钟门控)
 
 ## 📥 安装说明
 
@@ -256,21 +342,12 @@ performance:
 3.  **首次运行** - 应用会自动请求 Root 权限并初始化系统。
 4.  **权限配置** - 根据应用提示完成无障碍服务等权限的配置。
 
-### 配置建议
-
-1.  **开启无障碍服务** - 启用智能动态模式功能。
-2.  **授予悬浮窗权限** - 启用悬浮窗快速控制功能。
-3.  **设置应用规则** - 为常用应用配置专属的性能策略。
-4.  **调整通知设置** - 确保状态通知始终显示。
-
 ## 🚀 性能优化建议
 
 ### 日常使用
 
 1.  **使用均衡模式** - 为大部分应用提供最佳的性能功耗平衡。
 2.  **设置应用规则** - 为游戏应用设置性能或极速模式。
-3.  **启用智能切换** - 让系统根据应用自动调整性能。
-4.  **合理使用悬浮窗** - 在需要时快速调整性能模式。
 
 ### 游戏优化
 
@@ -282,7 +359,7 @@ performance:
 ### 省电优化
 
 1.  **使用省电模式** - 在低负载场景下最大化续航。
-2.  **限制后台应用** - 通过 Cpuset 限制后台应用的 CPU 使用。
+2.  **限制后台应用** - 通过 `Cpuset` 限制后台应用的 CPU 使用。
 3.  **优化 I/O 调度** - 减少存储访问的功耗开销。
 4.  **关闭不需要的功能** - 根据需要禁用部分高级功能。
 
@@ -298,21 +375,14 @@ performance:
 
 **Q: 智能动态模式不工作？**
 
-  * 确保已开启无障碍服务权限。
-  * 检查应用是否在省电白名单中。
   * 验证应用规则是否正确配置。
-
-**Q: 悬浮窗无法显示？**
-
-  * 检查是否已授予悬浮窗权限。
-  * 确保无障碍服务正常运行。
-  * 尝试手动开启悬浮窗功能。
+  * 验证yuki-daemon模块是否安装并正常运行。
 
 **Q: 性能模式切换无效？**
 
-  * 检查 YukiCpuScheduler 守护进程是否正常运行。
-  * 查看应用日志以确定具体错误信息。
-  * 验证配置文件格式是否正确。
+  * 验证yuki-daemon模块是否安装并正常运行。
+  * 查看yuki-daemon模块日志以确定具体错误信息。
+  * 验证配置文件格式是否正确（`config.yaml` 严格区分大小写）。
 
 ## 📊 项目统计
 
@@ -325,14 +395,14 @@ performance:
 ## 📮 联系我们
 
   * **GitHub Issues** - [项目问题和建议](https://github.com/imacte/YukiCtrl/issues)
-  * **QQ 群 1** - 1036909137
-  * **QQ 群 2** - 1055174076
+  * **QQ 群** - 1036909137
+  * **Telegram** - [加入tg频道](https://t.me/+gp4adLJAsXYzMjc1)
 
 -----
 
 <div align="center">
 
-<sub>📅 文档更新时间：2025年10月11日</sub><br>
+<sub>📅 文档更新时间：2025年10月14日</sub><br>
 <sub>🚀 YukiCtrl - 让每一台 Android 设备都拥有最佳的性能体验</sub>
 
 </div>

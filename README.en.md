@@ -46,7 +46,7 @@ YukiCtrl offers four main performance modes:
 | **Balance** | ⚖️ | The optimal balance between performance and power consumption. | Daily use, social apps. |
 | **Performance** | ⚡ | Prioritizes performance with a moderate increase in power consumption. | Large applications, light gaming. |
 | **Fast** | 🚀 | Unleashes maximum performance, ignoring power consumption. | Heavy gaming, performance testing. |
-| **Fas** | | For compatibility with fas modules. | |
+| **Fas** | | **Compatibility Mode**. Releases CPU frequency control (only modifies node permissions), for compatibility with external modules like FAS. | Use with other scheduling modules. |
 
 ## 📱 Application Functions Explained
 
@@ -87,9 +87,9 @@ The core of YukiCtrl is driven by a rust daemon, **YukiCpuScheduler**. It is res
 #### Core Features
 
   * **High-Performance rust Implementation**: Extremely low system resource usage and minimal power consumption.
-  * **Real-time Configuration Monitoring**: Supports configuration hot-reloading, allowing mode switches without a reboot.
+  * **Real-time Configuration Monitoring**: Supports hot-reloading for configuration (`config.yaml`) and mode (`mode.txt`) files, allowing mode switches without a reboot.
   * **Multi-level Optimization Strategy**: Comprehensive tuning from CPU frequency to bus speed.
-  * **Smart App Launch Boost**: Temporarily boosts performance when an app starts to speed up loading times.
+  * **Smart App Launch Boost**: Monitors `top-app` cgroup changes to provide a temporary performance boost during app launch, speeding up loading times.
 
 #### Scheduling Functions
 
@@ -99,10 +99,10 @@ The core of YukiCtrl is driven by a rust daemon, **YukiCpuScheduler**. It is res
 | **Governor Management** | Supports fine-grained tuning of various governors like schedutil, walt, and their internal parameters. |
 | **Core Allocation (Cpuset)** | Assigns appropriate CPU cores to different task groups (foreground, background, etc.), key for managing power and performance. |
 | **Bus Frequency Optimization** | Finely controls the frequency of the SoC's internal data bus (LLCC cache/DDR memory), significantly impacting system responsiveness and power consumption. |
-| **I/O Scheduler Optimization** | Optimizes storage device access policies and allows for custom I/O schedulers. |
+| **I/O Scheduler Optimization** | Optimizes storage device access policies, allows for custom I/O schedulers, and can disable iostats. |
 | **EAS Scheduler Tuning** | Advanced parameter optimization for kernels that support Energy Aware Scheduling (EAS). |
-| **Core Affinity Optimization** | The `AffinitySetter` provides static core binding for critical system processes, significantly improving UI smoothness. |
-| **Conflict Management** | Automatically disables most common userspace and kernel-level performance boosters (like touch boost) to ensure the scheduler's policy is the single source of truth. |
+| **Core Binding Optimization (AffinitySetter)** | Automatically creates `yuki` and `Rubbish` cgroups. Binds critical system processes (e.g., `systemui`, `surfaceflinger`) to the `yuki` group and isolates interfering processes (e.g., `kswapd0`, `logcat`) to the `Rubbish` group, significantly improving UI smoothness. |
+| **Conflict Management** | Automatically disables most common userspace and kernel-level performance boosters (like FEAS, except in Fast mode) to ensure the scheduler's policy is the single source of truth. |
 
 -----
 
@@ -112,19 +112,18 @@ YukiCtrl uses a YAML-formatted configuration file, allowing for deep customizati
 
 #### 1️⃣ Metadata (`meta`)
 
-This section defines the basic information for the configuration file.
+This section defines the basic behavior of the daemon.
 
 ```yaml
 meta:
-  name: "YukiCpuScheduler Profile"
-  author: "yuki"
   loglevel: "INFO"
+  language: "en"
 ```
 
 | Field | Type | Description |
 | :--- | :--- | :--- |
-| `configVersion` | number | **Crucial**. This version number must exactly match the version required by the program. |
-| `loglevel` | string | Log level detail. Options: `DEBUG`, `INFO`, `WARNING`, `ERROR`. |
+| `loglevel` | string | Log level detail. Options: `DEBUG`, `INFO`, `WARN`, `ERROR`. |
+| `language` | string | Daemon log language. Currently supports `en` (English) and `zh` (Chinese). |
 
 #### 2️⃣ Function Toggles (`function`)
 
@@ -132,7 +131,6 @@ This section contains the master switches for all major features.
 
 ```yaml
 function:
-  DisableQcomGpu: true
   AffinitySetter: true
   CpuIdleScaling_Governor: false
   EasScheduler: true
@@ -145,16 +143,31 @@ function:
 
 | Function | Description |
 | :--- | :--- |
-| `AffinitySetter` | **(Recommended)** **Do not enable on HyperOS 3**. Performs static core binding for critical system processes, **significantly improving UI smoothness**. |
-| `CpuIdleScaling_Governor`| Whether to allow custom CPU Idle governors. |
-| `EasScheduler` | If the kernel supports **EAS**, enabling this will apply optimized parameters. |
-| `cpuset` | **(Recommended)** Enables the Cpuset feature to assign different task groups to appropriate CPU cores. |
+| `AffinitySetter` | **(Recommended)** **Do not enable on HyperOS 3**. Enables core binding optimization (`yuki` and `Rubbish` cgroups). |
+| `CpuIdleScaling_Governor`| Whether to allow custom CPU Idle governors (see `CpuIdle` section). |
+| `EasScheduler` | If the kernel supports **EAS**, enabling this will apply optimized parameters (see `EasSchedulerValue` section). |
+| `cpuset` | **(Recommended)** Enables the Cpuset feature to assign different task groups to appropriate CPU cores (see `Cpuset` section). |
 | `LoadBalancing` | Enables CFS load balancing optimizations for more rational task distribution across cores. |
 | `EnableFeas` | Whether to attempt enabling the kernel's FEAS feature in **Fast mode**. |
-| `AdjIOScheduler` | Whether to allow custom I/O schedulers. |
-| `AppLaunchBoost` | **(Recommended)** Enables app launch acceleration to speed up loading times. |
+| `AdjIOScheduler` | Whether to allow custom I/O schedulers (see `IO_Settings` section). |
+| `AppLaunchBoost` | **(Recommended)** Enables app launch acceleration to speed up loading times (see `AppLaunchBoostSettings` section). |
 
-#### 3️⃣ Core Framework & Allocation (`CoreFramework` & `CoreAllocation`)
+#### 3️⃣ App Launch Boost (`AppLaunchBoostSettings`)
+
+Requires `function.AppLaunchBoost` to be `true`.
+
+```yaml
+AppLaunchBoostSettings:
+  FreqMulti: 1.2
+  BoostRateMs: 200
+```
+
+| Field | Type | Description |
+| :--- | :--- | :--- |
+| `FreqMulti` | float | On launch, the CPU max frequency is multiplied by this factor based on the **current mode**. `1.2` means a 20% boost. |
+| `BoostRateMs`| int | Duration of the launch boost (in milliseconds). |
+
+#### 4️⃣ Core Framework & Allocation (`CoreFramework` & `CoreAllocation`)
 
 This section defines your device's physical core architecture and is the foundation for all frequency and core control functions. **It must be configured correctly\!**
 
@@ -166,13 +179,70 @@ This section defines your device's physical core architecture and is the foundat
       BigCorePath: 5
       SuperBigCorePath: 7
     ```
-  * **Core Allocation (`CoreAllocation`)**: Provides parameters for the `AffinitySetter` feature, specifying the core range to which critical system processes will be bound.
+  * **Core Allocation (`CoreAllocation`)**: Provides parameters for the `AffinitySetter` feature, specifying the core range to which critical system processes (`yuki` cgroup) will be bound.
     ```yaml
     CoreAllocation:
-      cpusetCore: "2-7"
+      CpuSetCore: "2-7"
     ```
 
-#### 4️⃣ Bus Frequency Control (`Bus_dcvs_Path` & `Bus_dcvs`)
+#### 5️⃣ I/O Scheduling (`IO_Settings`)
+
+```yaml
+IO_Settings:
+  Scheduler: "none"
+  Io_optimization: true
+```
+
+| Field | Type | Description |
+| :--- | :--- | :--- |
+| `Scheduler` | string | **(Requires \`AdjIOScheduler\` to be on)** Sets the I/O scheduler, e.g., "mq-deadline", "none". |
+| `Io_optimization` | bool | Whether to disable `iostats` and `nomerges`, etc., to optimize I/O performance. |
+
+#### 6️⃣ EAS Scheduler (`EasSchedulerValue`)
+
+Requires `function.EasScheduler` to be `true`.
+
+```yaml
+EasSchedulerValue:
+  sched_min_granularity_ns: "1000000"
+  sched_nr_migrate: "32"
+  sched_wakeup_granularity_ns: "1000000"
+  sched_schedstats: "0"
+```
+
+#### 7️⃣ CPU Idle (`CpuIdle`)
+
+Requires `function.CpuIdleScaling_Governor` to be `true`.
+
+```yaml
+CpuIdle:
+  current_governor: "ladder"
+```
+
+  * `current_governor`: Sets the CPU Idle governor.
+
+#### 8️⃣ Cpuset (Core Grouping)
+
+Requires `function.cpuset` to be `true`. This restricts different types of task groups to run on specified CPU cores.
+
+```yaml
+Cpuset:
+  top_app: "0-7"
+  foreground: "0-7"
+  background: "0-3"
+  system_background: "0-2"
+  restricted: "0-1"
+```
+
+| Field | Description | Recommended Value |
+| :--- | :--- | :--- |
+| `top_app` | The application currently running in the foreground. | Should be assigned all cores, e.g., `"0-7"`. |
+| `foreground` | Foreground services and visible applications. | Should also be assigned all or most cores. |
+| `background` | Applications and services running in the background. | **Should be restricted to efficiency cores**, e.g., `"0-3"`, to save power. |
+| `system_background` | System background services. | Should also be restricted to efficiency cores. |
+| `restricted` | Background apps that are restricted by the system. | Should be assigned the minimum number of cores. |
+
+#### 9️⃣ Bus Frequency Control (`Bus_dcvs_Path` & `Bus_dcvs`)
 
 This feature allows for fine-grained control over the SoC's internal data bus (LLCC cache/DDR memory) frequency. Configuration is a two-step process:
 
@@ -194,7 +264,7 @@ This feature allows for fine-grained control over the SoC's internal data bus (L
         CPUddrmax: 3196000
     ```
 
-#### 5️⃣ Dynamic Governor Parameters (`pGovPath` & `Govsets`)
+#### 🔟 Dynamic Governor Parameters (`pGovPath` & `Govsets`)
 
 This feature allows for fine-tuning the internal parameters of the CPU governor. This is also a two-step process:
 
@@ -217,19 +287,7 @@ This feature allows for fine-tuning the internal parameters of the CPU governor.
           path1: "95"     # Corresponds to target_loads
     ```
 
-#### 6️⃣ Cpuset (Core Grouping)
-
-Requires `function.cpuset` to be `true`. This restricts different types of task groups to run on specified CPU cores.
-
-| Field | Description | Recommended Value |
-| :--- | :--- | :--- |
-| `top_app` | The application currently running in the foreground. | Should be assigned all cores, e.g., `"0-7"`. |
-| `foreground` | Foreground services and visible applications. | Should also be assigned all or most cores. |
-| `background` | Applications and services running in the background. | **Should be restricted to efficiency cores**, e.g., `"0-3"`, to save power. |
-| `system_background` | System background services. | Should also be restricted to efficiency cores. |
-| `restricted` | Background apps that are restricted by the system. | Should be assigned the minimum number of cores. |
-
-#### 7️⃣ Power Model Explained (using `performance` mode as an example)
+#### 1️⃣1️⃣ Power Model Explained (using `performance` mode as an example)
 
 A complete performance mode is defined by the combination of the following six modules. You can mix and match them to create the perfect mode for your needs.
 
@@ -242,6 +300,34 @@ performance:
   Govsets: { ... }  # Governor Parameters: Fine-tunes the behavior of the current governor
   Other: { ... }    # Other settings
 ```
+
+**Detailed Explanation:**
+
+  * **`Governor` (Governor)**:
+      * `Global`: "schedutil" (Global default)
+      * `SmallCore`: "" (Uses global if empty)
+      * ... (Other core clusters)
+  * **`Freq` (CPU Frequency)**:
+      * `SmallCoreMinFreq`: 0 (or "min")
+      * `SmallCoreMaxFreq`: 9999999 (or "max")
+      * ... (Other core clusters)
+      * **Note**: Frequency fields support `"min"` and `"max"` strings, which the daemon will convert to `0` and `9999999` (or `10000000`) respectively.
+  * **`Uclamp` (Uclamp Settings)**:
+      * `UclampTopAppMin`: "0"
+      * `UclampTopAppMax`: "100"
+      * `UclampTopApplatency_sensitive`: "0"
+      * `UclampForeGroundMin`: "0"
+      * `UclampForeGroundMax`: "70"
+      * `UclampBackGroundMin`: "0"
+      * `UclampBackGroundMax`: "50"
+  * **`Bus_dcvs` (Bus Frequency)**:
+      * `CPUllccmin`: ""
+      * `CPUllccmax`: ""
+      * ...
+  * **`Govsets` (Governor Parameters)**:
+      * (Structure as described above)
+  * **`Other` (Other Settings)**:
+      * `UfsClkGate`: false (Whether to disable UFS clock gating)
 
 ## 📥 Installation Instructions
 
@@ -256,21 +342,12 @@ performance:
 3.  **First Run** - The app will automatically request Root access and initialize the system.
 4.  **Configure Permissions** - Follow the in-app prompts to grant necessary permissions like the Accessibility Service.
 
-### Configuration Suggestions
-
-1.  **Enable Accessibility Service** - Required for the Smart Dynamic Mode feature.
-2.  **Grant Floating Window Permission** - Required for the quick control overlay.
-3.  **Set App Rules** - Configure dedicated performance policies for your most-used apps.
-4.  **Adjust Notification Settings** - Ensure the status notification remains visible.
-
 ## 🚀 Performance Optimization Suggestions
 
 ### Daily Use
 
 1.  **Use Balance Mode** - Provides the best performance/power balance for most apps.
 2.  **Set App Rules** - Set gaming apps to Performance or Fast mode.
-3.  **Enable Smart Switching** - Let the system automatically manage performance based on the app.
-4.  **Use the Floating Window** - Quickly change performance modes when needed.
 
 ### Gaming Optimization
 
@@ -282,7 +359,7 @@ performance:
 ### Power Saving Optimization
 
 1.  **Use Powersave Mode** - Maximize battery life in low-load scenarios.
-2.  **Restrict Background Apps** - Use Cpuset to limit CPU usage for background apps.
+2.  **Restrict Background Apps** - Use `Cpuset` to limit CPU usage for background apps.
 3.  **Optimize I/O Scheduler** - Reduce power consumption from storage access.
 4.  **Disable Unneeded Features** - Turn off advanced features as needed to save power.
 
@@ -298,21 +375,16 @@ performance:
 
 **Q: Smart Dynamic Mode isn't working?**
 
-  * Make sure the Accessibility Service permission has been granted.
-  * Check if the app is on your system's power-saving whitelist.
-  * Verify that your app rules are configured correctly.
-
-**Q: The floating window won't appear?**
-
-  * Check if the "display over other apps" permission has been granted.
-  * Ensure the Accessibility Service is running correctly.
-  * Try manually toggling the floating window feature off and on.
+  * Verify that app rules are configured correctly.
+  * Verify that the yuki-daemon module is installed and running correctly.
 
 **Q: Performance modes aren't switching?**
 
-  * Check if the YukiCpuScheduler daemon is running correctly.
-  * View the in-app logs to identify specific error messages.
-  * Verify that the configuration file format is correct.
+  * Verify that the yuki-daemon module is installed and running correctly.
+  * View the yuki-daemon module logs to identify specific error messages.
+  * Verify the configuration file format is correct (`config.yaml` is case-sensitive).
+
+
 
 ## 📊 Project Statistics
 
@@ -325,6 +397,7 @@ performance:
 ## 📮 Contact Us
 
   * **GitHub Issues** - [For project issues and suggestions](https://github.com/imacte/YukiCtrl/issues)
+  * **Telegram** - [Join TG Channel](https://t.me/+gp4adLJAsXYzMjc1)
 
 -----
 
