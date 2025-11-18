@@ -37,13 +37,11 @@ IO_Settings:
   Scheduler: ""
   IO_optimization: true
 
-# EAS 调度器参数
-EasSchedulerValue:
-  sched_min_granularity_ns: "2000000"
-  sched_nr_migrate: "30"
-  sched_wakeup_granularity_ns: "3200000"
-  sched_schedstats: "0"
-
+# CFS 调度器参数
+CompletelyFairSchedulerValue:
+  sched_child_runs_first: ""
+  sched_rt_period_us: ""
+  sched_rt_runtime_us: ""
 
 # CPU 空闲设置
 CpuIdle:
