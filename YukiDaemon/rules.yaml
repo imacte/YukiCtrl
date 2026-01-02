@@ -1,0 +1,5 @@
+yuki_scheduler: true
+dynamic_enabled: true
+session_log_limit: 15
+global_mode: "balance"
+app_modes: {}

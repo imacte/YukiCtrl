@@ -1,0 +1,14 @@
+[target.aarch64-linux-android]
+# 指定链接器
+#linker = "/home/yuki/work/tools/android-ndk-r29-beta4//toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang"
+linker = "E:/work/android-ndk-r29/toolchains/llvm/prebuilt/windows-x86_64/bin/aarch64-linux-android26-clang.cmd"
+
+[env]
+# 告诉 cc crate (用于编译 libsqlite3-sys) C 编译器在哪里
+CC_aarch64-linux-android = "E:/work/android-ndk-r29/toolchains/llvm/prebuilt/windows-x86_64/bin/aarch64-linux-android26-clang.cmd"
+
+# 最好也为 C++ 编译器指定
+CXX_aarch64-linux-android = "E:/work/android-ndk-r29/toolchains/llvm/prebuilt/windows-x86_64/bin/aarch64-linux-android26-clang++.cmd"
+
+# 并且指定 AR (归档工具)，C 库编译时需要
+AR_aarch64-linux-android = "E:/work/android-ndk-r29/toolchains/llvm/prebuilt/windows-x86_64/bin/llvm-ar.exe"
