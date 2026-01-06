@@ -159,6 +159,7 @@ resolve_canonical_name() {
             "sm8550"|"kalama") canonical_name="sm8550"; break ;;
             "sm8650"|"pineapple") canonical_name="sm8650"; break ;;
             "sm8750") canonical_name="sm8750"; break ;;
+            "sm8850 | canoe") canonical_name="sm8850"; break ;;
         esac
     done
     
