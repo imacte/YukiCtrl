@@ -98,8 +98,11 @@ get_device_identifiers() {
   
   # 1a. 获取 ro.board.platform
   BOARD_PLATFORM=$(/system/bin/getprop ro.board.platform | $BUSYBOX tr '[:upper:]' '[:lower:]' | $BUSYBOX tr -d '[:space:]')
+  
+  # 无论是否为空，都打印出来
+  ui_print " $MSG_FOUND_PLATFORM $BOARD_PLATFORM"
+  
   if [ -n "$BOARD_PLATFORM" ]; then
-      ui_print " $MSG_FOUND_PLATFORM $BOARD_PLATFORM"
       IDENTIFIERS="$IDENTIFIERS $BOARD_PLATFORM"
   fi
 
@@ -110,8 +113,10 @@ get_device_identifiers() {
   fi
   # ---------------------------------
 
+  # 无论是否为空，都打印出来
+  ui_print " $MSG_FOUND_SOC_MODEL $RAW_SOC_MODEL"
+
   if [ -n "$RAW_SOC_MODEL" ]; then
-    ui_print " $MSG_FOUND_SOC_MODEL $RAW_SOC_MODEL"
     
     # 1c. 提取 shortSocPattern (e.g., sm8650)
     SHORT_SOC_MODEL=$($BUSYBOX echo "$RAW_SOC_MODEL" | $BUSYBOX sed -n 's/.*\(\(sm\|mt\|sdm\|sd\)[0-9]\{3,\}\).*/\1/p')

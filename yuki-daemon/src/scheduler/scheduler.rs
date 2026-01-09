@@ -520,7 +520,7 @@ impl CpuScheduler {
     }
 
     fn adj_system_process_cpuctl() -> Result<()> {
-        const PROCESS_NAMES: &[&str] = &["com.android.systemui", "surfaceflinger", "system_server", "android:ui", "providers.media"];
+        const PROCESS_NAMES: &[&str] = &["surfaceflinger", "system_server", "android:ui", "providers.media"]; //去掉"com.android.systemui"防止hyperOS3重启问题 
         for &process_name in PROCESS_NAMES {
             if let Ok(Some(pid_bytes)) = Self::get_pid_for_process(process_name) {
                 if let Err(e) = utils::write_to_file("/dev/cpuset/top-app/yuki/cgroup.procs", &pid_bytes) {
