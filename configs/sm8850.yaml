@@ -85,21 +85,21 @@ powersave:
     SuperBigCore: ""
   Freq:
     SmallCoreMinFreq: 0
-    SmallCoreMaxFreq: 1555200 
+    SmallCoreMaxFreq: 1900800 
     MediumCoreMinFreq: 0
-    MediumCoreMaxFreq: 1632000 
+    MediumCoreMaxFreq: 1497600 
     BigCoreMinFreq: 0
     BigCoreMaxFreq: 0
     SuperBigCoreMinFreq: 0
     SuperBigCoreMaxFreq: 0
   Uclamp:
     UclampTopAppMin: "5"
-    UclampTopAppMax: "60"
-    UclampTopApplatency_sensitive: "0"
+    UclampTopAppMax: "100"
+    UclampTopApplatency_sensitive: "1"
     UclampForeGroundMin: "0"
-    UclampForeGroundMax: "40"
+    UclampForeGroundMax: "55"
     UclampBackGroundMin: "0"
-    UclampBackGroundMax: "20"
+    UclampBackGroundMax: "40"
   Bus_dcvs:
     CPUllccmin: ""
     CPUllccmax: ""
@@ -141,9 +141,9 @@ balance:
   # 频率
   Freq:
     SmallCoreMinFreq: 0
-    SmallCoreMaxFreq: 2611200
+    SmallCoreMaxFreq: 2227200
     MediumCoreMinFreq: 0
-    MediumCoreMaxFreq: 2880000
+    MediumCoreMaxFreq: 1747200
     BigCoreMinFreq: 0
     BigCoreMaxFreq: 0
     SuperBigCoreMinFreq: 0
@@ -199,9 +199,9 @@ performance:
   # 频率
   Freq:
     SmallCoreMinFreq: 0
-    SmallCoreMaxFreq: 3398400  # 约 3.40GHz
+    SmallCoreMaxFreq: 2611200
     MediumCoreMinFreq: 0
-    MediumCoreMaxFreq: 3974400  # 约 3.97GHz
+    MediumCoreMaxFreq: 2438400
     BigCoreMinFreq: 0
     BigCoreMaxFreq: 0
     SuperBigCoreMinFreq: 0
@@ -212,7 +212,7 @@ performance:
     UclampTopAppMax: "100"
     UclampTopApplatency_sensitive: "1"
     UclampForeGroundMin: "0"
-    UclampForeGroundMax: "80"
+    UclampForeGroundMax: "65"
     UclampBackGroundMin: "0"
     UclampBackGroundMax: "50"
   #总线频率
@@ -271,9 +271,9 @@ fast:
     UclampTopAppMax: "100"
     UclampTopApplatency_sensitive: "1"
     UclampForeGroundMin: "0"
-    UclampForeGroundMax: "100"
+    UclampForeGroundMax: "65"
     UclampBackGroundMin: "0"
-    UclampBackGroundMax: "60"
+    UclampBackGroundMax: "50"
   #总线频率
   Bus_dcvs:
     CPUllccmin: ""
