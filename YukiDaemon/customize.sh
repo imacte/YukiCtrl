@@ -146,6 +146,7 @@ resolve_canonical_name() {
     
     for identifier in $identifier_list; do
         case "$identifier" in
+            "gs201"|"panther"|"GS201") canonical_name="gs201"; break ;;
             "mt6833") canonical_name="mt6833"; break ;;
             "mt6891") canonical_name="mt6891"; break ;;
             "mt6895") canonical_name="mt6895"; break ;;
