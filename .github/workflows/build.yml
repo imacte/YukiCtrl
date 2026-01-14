@@ -2,81 +2,148 @@ name: Build Magisk Module
 
 on:
   push:
-    branches: [ magisk_module ]
+    branches: [ main, magisk_module ]
     tags: [ 'v*' ]
-  pull_request:
-    branches: [ magisk_module ]
   workflow_dispatch:
-
-permissions:
-  contents: write
 
 jobs:
   build:
     runs-on: ubuntu-latest
     
     steps:
-    - uses: actions/checkout@v4
-    
-    - name: Install Rust
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Rust
       uses: dtolnay/rust-toolchain@stable
       with:
         targets: aarch64-linux-android
-    
-    - name: Setup Android NDK
-      uses: ruby/setup-ruby@v1
-      with:
-        ruby-version: '3.1'
-    
-    - name: Install Android NDK
-      run: |
-        wget https://dl.google.com/android/repository/android-ndk-r25b-linux.zip
-        unzip android-ndk-r25b-linux.zip -d /tmp
-        echo "ANDROID_NDK_HOME=/tmp/android-ndk-r25b" >> $GITHUB_ENV
-        echo "/tmp/android-ndk-r25b" >> $GITHUB_PATH
-    
-    - name: Build for Android
-      working-directory: yuki-daemon
-      env:
-        CC_aarch64_linux_android: /tmp/android-ndk-r25b/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang
-        CXX_aarch64_linux_android: /tmp/android-ndk-r25b/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang++
-        AR_aarch64_linux_android: /tmp/android-ndk-r25b/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
-      run: |
-        cargo build --target aarch64-linux-android --release
-        /tmp/android-ndk-r25b/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip target/aarch64-linux-android/release/yuki-daemon
-    
-    - name: Prepare module files
-      run: |
-        # 复制二进制文件
-        cp yuki-daemon/target/aarch64-linux-android/release/yuki-daemon YukiDaemon/core/bin/
         
-        # 更新 module.prop 版本（如果存在 tag）
-        if [ -n "${{ github.ref_name }}" ]; then
-          VERSION="${GITHUB_REF_NAME#v}"
-          sed -i "s/version=.*/version=$VERSION/" YukiDaemon/module.prop
+    - name: Add Android target
+      run: rustup target add aarch64-linux-android
+      
+    - name: Download Android NDK
+      run: |
+        wget -q https://dl.google.com/android/repository/android-ndk-r25c-linux.zip
+        unzip -q android-ndk-r25c-linux.zip
+        echo "NDK_HOME=$(pwd)/android-ndk-r25c" >> $GITHUB_ENV
+        
+    - name: Build Rust project
+      env:
+        CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER: "${{ env.NDK_HOME }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang"
+        CC_aarch64_linux_android: "${{ env.NDK_HOME }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang"
+        AR_aarch64_linux_android: "${{ env.NDK_HOME }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
+      run: |
+        # 检查目录是否存在
+        echo "当前目录内容:"
+        ls -la
+        
+        echo "检查 yuki-daemon 目录:"
+        if [ -d "yuki-daemon" ]; then
+          echo "yuki-daemon 目录存在"
+          cd yuki-daemon
+          ls -la
+          echo "开始构建..."
+          cargo build --target aarch64-linux-android --release
+          
+          # Strip 二进制文件
+          "${{ env.NDK_HOME }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" target/aarch64-linux-android/release/yuki-daemon
+        else
+          echo "错误: yuki-daemon 目录不存在"
+          echo "尝试在根目录构建..."
+          ls -la
+          
+          # 如果 yuki-daemon 不存在，可能在根目录直接构建
+          if [ -f "Cargo.toml" ]; then
+            echo "在根目录找到 Cargo.toml，直接构建"
+            cargo build --target aarch64-linux-android --release
+            "${{ env.NDK_HOME }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" target/aarch64-linux-android/release/yuki-daemon
+          else
+            echo "致命错误: 找不到 Rust 项目"
+            exit 1
+          fi
+        fi
+        
+    - name: Prepare module directory
+      run: |
+        # 检查模块目录是否存在
+        if [ ! -d "YukiDaemon" ]; then
+          echo "创建 YukiDaemon 目录结构"
+          mkdir -p YukiDaemon/core/bin
+          
+          # 创建基本的 module.prop
+          cat > YukiDaemon/module.prop << EOF
+          id=yukidaemon
+          name=YukiDaemon
+          version=1.0.0
+          versionCode=$(date +'%Y%m%d')
+          author=imacte
+          description=Yuki Control Daemon
+          EOF
+          
+          # 创建 service.sh
+          cat > YukiDaemon/service.sh << 'EOF'
+          #!/system/bin/sh
+          MODDIR=${0%/*}
+          chmod 755 "$MODDIR/core/bin/yuki-daemon"
+          exec "$MODDIR/core/bin/yuki-daemon" "$@"
+          EOF
+          chmod +x YukiDaemon/service.sh
+        fi
+        
+        # 复制二进制文件
+        if [ -f "yuki-daemon/target/aarch64-linux-android/release/yuki-daemon" ]; then
+          cp yuki-daemon/target/aarch64-linux-android/release/yuki-daemon YukiDaemon/core/bin/
+        elif [ -f "target/aarch64-linux-android/release/yuki-daemon" ]; then
+          cp target/aarch64-linux-android/release/yuki-daemon YukiDaemon/core/bin/
+        else
+          echo "错误: 找不到编译好的二进制文件"
+          ls -la */target/*/release/ 2>/dev/null || echo "没有 target 目录"
+          exit 1
         fi
         
         # 设置权限
-        chmod +x YukiDaemon/service.sh
         chmod 755 YukiDaemon/core/bin/yuki-daemon
-    
+        
+    - name: Update version info
+      run: |
+        if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+          TAG_NAME="${GITHUB_REF#refs/tags/}"
+          VERSION="${TAG_NAME#v}"
+          echo "从标签获取版本: $VERSION"
+        else
+          COMMIT_SHORT=$(git rev-parse --short HEAD)
+          VERSION="1.0.0-git-${COMMIT_SHORT}"
+          echo "从提交生成版本: $VERSION"
+        fi
+        
+        # 更新 module.prop
+        if [ -f "YukiDaemon/module.prop" ]; then
+          sed -i "s/^version=.*/version=$VERSION/" YukiDaemon/module.prop
+          sed -i "s/^versionCode=.*/versionCode=$(date +'%Y%m%d%H')/" YukiDaemon/module.prop
+        fi
+        
     - name: Create ZIP package
       run: |
         cd YukiDaemon
         VERSION=$(grep 'version=' module.prop | cut -d'=' -f2)
-        TIMESTAMP=$(date +'%Y%m%d')
-        zip -r9 "../YukiDaemon-v${VERSION}-${TIMESTAMP}.zip" .
-    
+        echo "创建版本: $VERSION"
+        zip -r9 "../YukiDaemon-$VERSION.zip" .
+        cd ..
+        ls -la *.zip
+        
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
         name: magisk-module
         path: YukiDaemon-*.zip
-    
+        
     - name: Create Release
       if: startsWith(github.ref, 'refs/tags/v')
-      uses: ncipollo/release-action@v1
+      uses: softprops/action-gh-release@v1
       with:
-        artifacts: "YukiDaemon-*.zip"
-        generateReleaseNotes: true
-        token: ${{ secrets.GITHUB_TOKEN }}
+        files: YukiDaemon-*.zip
+        generate_release_notes: true
+        draft: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
