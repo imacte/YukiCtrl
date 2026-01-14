@@ -1,0 +1,82 @@
+name: Build Magisk Module
+
+on:
+  push:
+    branches: [ magisk_module ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ magisk_module ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: aarch64-linux-android
+    
+    - name: Setup Android NDK
+      uses: ruby/setup-ruby@v1
+      with:
+        ruby-version: '3.1'
+    
+    - name: Install Android NDK
+      run: |
+        wget https://dl.google.com/android/repository/android-ndk-r25b-linux.zip
+        unzip android-ndk-r25b-linux.zip -d /tmp
+        echo "ANDROID_NDK_HOME=/tmp/android-ndk-r25b" >> $GITHUB_ENV
+        echo "/tmp/android-ndk-r25b" >> $GITHUB_PATH
+    
+    - name: Build for Android
+      working-directory: yuki-daemon
+      env:
+        CC_aarch64_linux_android: /tmp/android-ndk-r25b/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang
+        CXX_aarch64_linux_android: /tmp/android-ndk-r25b/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang++
+        AR_aarch64_linux_android: /tmp/android-ndk-r25b/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
+      run: |
+        cargo build --target aarch64-linux-android --release
+        /tmp/android-ndk-r25b/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip target/aarch64-linux-android/release/yuki-daemon
+    
+    - name: Prepare module files
+      run: |
+        # 复制二进制文件
+        cp yuki-daemon/target/aarch64-linux-android/release/yuki-daemon YukiDaemon/core/bin/
+        
+        # 更新 module.prop 版本（如果存在 tag）
+        if [ -n "${{ github.ref_name }}" ]; then
+          VERSION="${GITHUB_REF_NAME#v}"
+          sed -i "s/version=.*/version=$VERSION/" YukiDaemon/module.prop
+        fi
+        
+        # 设置权限
+        chmod +x YukiDaemon/service.sh
+        chmod 755 YukiDaemon/core/bin/yuki-daemon
+    
+    - name: Create ZIP package
+      run: |
+        cd YukiDaemon
+        VERSION=$(grep 'version=' module.prop | cut -d'=' -f2)
+        TIMESTAMP=$(date +'%Y%m%d')
+        zip -r9 "../YukiDaemon-v${VERSION}-${TIMESTAMP}.zip" .
+    
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: magisk-module
+        path: YukiDaemon-*.zip
+    
+    - name: Create Release
+      if: startsWith(github.ref, 'refs/tags/v')
+      uses: ncipollo/release-action@v1
+      with:
+        artifacts: "YukiDaemon-*.zip"
+        generateReleaseNotes: true
+        token: ${{ secrets.GITHUB_TOKEN }}
