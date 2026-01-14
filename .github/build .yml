@@ -1,0 +1,137 @@
+name: Build Magisk Module
+
+on:
+  push:
+    branches: [ magisk_module ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ magisk_module ]
+  workflow_dispatch:  # 允许手动触发
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@v1
+      with:
+        toolchain: stable
+        target: aarch64-linux-android
+        
+    - name: Install Android NDK
+      run: |
+        # 下载 Android NDK
+        wget -q https://dl.google.com/android/repository/android-ndk-r25c-linux.zip
+        unzip -q android-ndk-r25c-linux.zip
+        echo "NDK_PATH=$(pwd)/android-ndk-r25c" >> $GITHUB_ENV
+        echo "$(pwd)/android-ndk-r25c/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_PATH
+        
+    - name: Build Rust project
+      working-directory: ./yuki-daemon  # 关键：指定工作目录
+      env:
+        CC_aarch64_linux_android: "${{ env.NDK_PATH }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang"
+        CXX_aarch64_linux_android: "${{ env.NDK_PATH }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang++"
+        AR_aarch64_linux_android: "${{ env.NDK_PATH }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
+      run: |
+        echo "当前工作目录: $(pwd)"
+        echo "目录内容:"
+        ls -la
+        
+        echo "开始构建 Rust 项目..."
+        cargo build --target aarch64-linux-android --release
+        
+        echo "编译完成，检查输出:"
+        ls -la target/aarch64-linux-android/release/
+        
+        # Strip 二进制文件
+        "${{ env.NDK_PATH }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" target/aarch64-linux-android/release/yuki-daemon
+        
+    - name: Prepare Magisk module
+      run: |
+        echo "准备 Magisk 模块..."
+        
+        # 检查 YukiDaemon 目录是否存在
+        if [ ! -d "YukiDaemon" ]; then
+          echo "错误: YukiDaemon 目录不存在!"
+          ls -la
+          exit 1
+        fi
+        
+        # 检查二进制文件是否存在
+        if [ ! -f "yuki-daemon/target/aarch64-linux-android/release/yuki-daemon" ]; then
+          echo "错误: 找不到编译的二进制文件!"
+          find . -name "yuki-daemon" -type f
+          exit 1
+        fi
+        
+        # 复制二进制文件到模块目录
+        echo "复制二进制文件..."
+        cp yuki-daemon/target/aarch64-linux-android/release/yuki-daemon YukiDaemon/core/bin/
+        
+        # 设置权限
+        chmod 755 YukiDaemon/core/bin/yuki-daemon
+        chmod 755 YukiDaemon/service.sh
+        
+    - name: Update version info
+      run: |
+        echo "更新版本信息..."
+        
+        # 获取版本号
+        if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          echo "使用标签版本: $VERSION"
+        elif [[ "${{ github.ref }}" == refs/heads/magisk_module ]]; then
+          VERSION="$(date +'%Y.%m.%d')-nightly"
+          echo "使用 nightly 版本: $VERSION"
+        else
+          VERSION="1.0.0-dev"
+          echo "使用默认版本: $VERSION"
+        fi
+        
+        # 更新 module.prop
+        if [ -f "YukiDaemon/module.prop" ]; then
+          sed -i "s/^version=.*/version=$VERSION/" YukiDaemon/module.prop
+          sed -i "s/^versionCode=.*/versionCode=$(date +'%Y%m%d')/" YukiDaemon/module.prop
+        else
+          echo "错误: module.prop 不存在!"
+          exit 1
+        fi
+        
+    - name: Create ZIP package
+      run: |
+        echo "创建 ZIP 包..."
+        
+        # 获取版本号
+        VERSION=$(grep 'version=' YukiDaemon/module.prop | cut -d'=' -f2)
+        ZIP_NAME="YukiDaemon-$VERSION.zip"
+        
+        echo "打包为: $ZIP_NAME"
+        
+        # 进入模块目录并打包
+        cd YukiDaemon
+        zip -r9 "../$ZIP_NAME" .
+        cd ..
+        
+        echo "打包完成，文件列表:"
+        ls -la *.zip
+        
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: magisk-module
+        path: YukiDaemon-*.zip
+        
+    - name: Create Release
+      if: startsWith(github.ref, 'refs/tags/v')
+      uses: softprops/action-gh-release@v1
+      with:
+        files: YukiDaemon-*.zip
+        generate_release_notes: true
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
