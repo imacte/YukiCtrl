@@ -1,0 +1,11 @@
+yumi_scheduler: true
+dynamic_enabled: true
+global_mode: "balance"
+
+fas_rules:
+  fps_gears: [30.0, 60.0, 90.0, 120.0, 144.0]
+  fps_margin: "3"
+  latency_threshold: ""
+  poll_interval_ms: ""
+
+app_modes: {}

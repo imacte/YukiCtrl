@@ -1,0 +1,299 @@
+# 元数据信息
+meta:
+  name: "default_config"
+  author: "yuki"
+  language: "en"
+  loglevel: "INFO"
+
+# 主要功能开关
+function:
+  AffinitySetter: false
+  CpuIdleScalingGovernor: false
+  EasScheduler: false
+  cpuset: false
+  LoadBalancing: false
+  EnableFeas: false
+  AdjIOScheduler: false
+  AppLaunchBoost: false
+
+# App启动加速设置
+AppLaunchBoostSettings:
+  FreqMulti: 1.2    # 频率提升倍率 (1.2 表示提升20%)
+  BoostRateMs: 200  # 持续时间 (毫秒)
+
+# 核心分配设置
+CoreAllocation:
+  CpuSetCore: "4-7"
+
+# 核心框架路径
+CoreFramework:
+  SmallCorePath: 0
+  MediumCorePath: 4
+  BigCorePath: -1
+  SuperBigCorePath: -1
+
+# IO 调度器设置
+IO_Settings:
+  Scheduler: ""
+  IO_optimization: true
+
+# CFS 调度器参数
+CompletelyFairSchedulerValue:
+  sched_child_runs_first: ""
+  sched_rt_period_us: ""
+  sched_rt_runtime_us: ""
+
+# CPU 空闲设置
+CpuIdle:
+  current_governor: ""
+
+# Cpuset 分组
+Cpuset:
+  top_app: "0-7"
+  foreground: "0-7"
+  restricted: "0-5"
+  system_background: "1-2"
+  background: "0-2"
+
+Bus_dcvs_Path:
+  CPUllccminPath: ""
+  CPUllccmaxPath: ""
+  CPUddrminPath: ""
+  CPUddrmaxPath: ""
+
+#调速器参数（path可加） 
+pGovPath:
+  schedutil:
+    path1: ""
+    path2: ""
+    path3: ""
+  walt:
+    path1: ""
+    path2: ""
+    path3: ""
+
+# --- 性能模式 ---
+
+# 省电模式
+powersave:
+  # 调速器
+  Governor:
+    global: "schedutil"
+    SmallCore: ""
+    MediumCore: ""
+    BigCore: ""
+    SuperBigCore: ""
+  # 频率
+  Freq:
+    SmallCoreMinFreq: "min"
+    SmallCoreMaxFreq: 1500000
+    MediumCoreMinFreq: "min"
+    MediumCoreMaxFreq: 1800000
+    BigCoreMinFreq: "min"
+    BigCoreMaxFreq: 1700000
+    SuperBigCoreMinFreq: "min"
+    SuperBigCoreMaxFreq: 1700000
+  # 频率限制
+  Uclamp:
+    UclampTopAppMin: "0"
+    UclampTopAppMax: "100"
+    UclampTopApplatency_sensitive: "0"
+    UclampForeGroundMin: "0"
+    UclampForeGroundMax: "70"
+    UclampBackGroundMin: "0"
+    UclampBackGroundMax: "50"
+  #总线频率
+  Bus_dcvs:
+    CPUllccmin: ""
+    CPUllccmax: ""
+    CPUddrmin: ""
+    CPUddrmax: ""
+  #调速器参数值
+  Govsets:
+    schedutil:
+      path1: 
+        SmallCore: ""
+        MediumCore: ""
+        BigCore: ""
+        SuperBigCore: ""
+      path2: 
+        SmallCore: ""
+        MediumCore: ""
+        BigCore: ""
+        SuperBigCore: ""
+      path3: 
+        SmallCore: ""
+        MediumCore: ""
+        BigCore: ""
+        SuperBigCore: ""
+  # 其他设置
+  Other:
+    ufsClkGate: false
+
+# 均衡模式
+balance:
+  # 调速器
+  Governor:
+    global: "schedutil"
+    SmallCore: ""
+    MediumCore: ""
+    BigCore: ""
+    SuperBigCore: ""
+  # 频率
+  Freq:
+    SmallCoreMinFreq: "min"
+    SmallCoreMaxFreq: 1500000
+    MediumCoreMinFreq: "min"
+    MediumCoreMaxFreq: 2000000
+    BigCoreMinFreq: "min"
+    BigCoreMaxFreq: 2300000
+    SuperBigCoreMinFreq: "min"
+    SuperBigCoreMaxFreq: 2300000
+  # 频率限制
+  Uclamp:
+    UclampTopAppMin: "0"
+    UclampTopAppMax: "100"
+    UclampTopApplatency_sensitive: "0"
+    UclampForeGroundMin: "0"
+    UclampForeGroundMax: "70"
+    UclampBackGroundMin: "0"
+    UclampBackGroundMax: "50"
+  #总线频率
+  Bus_dcvs:
+    CPUllccmin: ""
+    CPUllccmax: ""
+    CPUddrmin: ""
+    CPUddrmax: ""
+  #调速器参数值
+  Govsets:
+    schedutil:
+      path1: 
+        SmallCore: ""
+        MediumCore: ""
+        BigCore: ""
+        SuperBigCore: ""
+      path2: 
+        SmallCore: ""
+        MediumCore: ""
+        BigCore: ""
+        SuperBigCore: ""
+      path3: 
+        SmallCore: ""
+        MediumCore: ""
+        BigCore: ""
+        SuperBigCore: ""
+  # 其他设置
+  Other:
+    ufsClkGate: false
+
+# 性能模式
+performance:
+  # 调速器
+  Governor:
+    global: "schedutil"
+    SmallCore: ""
+    MediumCore: ""
+    BigCore: "" 
+    SuperBigCore: ""
+  # 频率
+  Freq:
+    SmallCoreMinFreq: "min"
+    SmallCoreMaxFreq: 1800000
+    MediumCoreMinFreq: "min"
+    MediumCoreMaxFreq: 2500000
+    BigCoreMinFreq: "min"
+    BigCoreMaxFreq: 3000000
+    SuperBigCoreMinFreq: "min"
+    SuperBigCoreMaxFreq: 3000000
+  # 频率限制
+  Uclamp:
+    UclampTopAppMin: "0"
+    UclampTopAppMax: "100"
+    UclampTopApplatency_sensitive: "1"
+    UclampForeGroundMin: "0"
+    UclampForeGroundMax: "80"
+    UclampBackGroundMin: "0"
+    UclampBackGroundMax: "50"
+  #总线频率
+  Bus_dcvs:
+    CPUllccmin: ""
+    CPUllccmax: ""
+    CPUddrmin: ""
+    CPUddrmax: ""
+  #调速器参数值
+  Govsets:
+    schedutil:
+      path1: 
+        SmallCore: ""
+        MediumCore: ""
+        BigCore: ""
+        SuperBigCore: ""
+      path2: 
+        SmallCore: ""
+        MediumCore: ""
+        BigCore: ""
+        SuperBigCore: ""
+      path3: 
+        SmallCore: ""
+        MediumCore: ""
+        BigCore: ""
+        SuperBigCore: ""
+  # 其他设置
+  Other:
+    ufsClkGate: false
+
+# 极速模式
+fast:
+  # 调速器
+  Governor:
+    global: "schedutil"
+    SmallCore: ""
+    MediumCore: ""
+    BigCore: "" 
+    SuperBigCore: ""
+  # 频率
+  Freq:
+    SmallCoreMinFreq: "max"
+    SmallCoreMaxFreq: "max"
+    MediumCoreMinFreq: "max"
+    MediumCoreMaxFreq: "max"
+    BigCoreMinFreq: "max"
+    BigCoreMaxFreq: "max"
+    SuperBigCoreMinFreq: "max"
+    SuperBigCoreMaxFreq: "max"
+  # 频率限制
+  Uclamp:
+    UclampTopAppMin: "10"
+    UclampTopAppMax: "100"
+    UclampTopApplatency_sensitive: "1"
+    UclampForeGroundMin: "0"
+    UclampForeGroundMax: "80"
+    UclampBackGroundMin: "0"
+    UclampBackGroundMax: "50"
+  #总线频率
+  Bus_dcvs:
+    CPUllccmin: ""
+    CPUllccmax: ""
+    CPUddrmin: ""
+    CPUddrmax: ""
+  #调速器参数值
+  Govsets:
+    schedutil:
+      path1: 
+        SmallCore: ""
+        MediumCore: ""
+        BigCore: ""
+        SuperBigCore: ""
+      path2: 
+        SmallCore: ""
+        MediumCore: ""
+        BigCore: ""
+        SuperBigCore: ""
+      path3: 
+        SmallCore: ""
+        MediumCore: ""
+        BigCore: ""
+        SuperBigCore: ""
+  # 其他设置
+  Other:
+    ufsClkGate: true

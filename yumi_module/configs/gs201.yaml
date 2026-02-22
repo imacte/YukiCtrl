@@ -1,0 +1,178 @@
+meta:
+  name: gs201
+  author: 你的颦儿
+  language: zh
+  loglevel: INFO
+function:
+  AffinitySetter: true
+  CpuIdleScalingGovernor: true
+  EasScheduler: true
+  cpuset: true
+  LoadBalancing: true
+  EnableFeas: true
+  AdjIOScheduler: true
+  AppLaunchBoost: true
+AppLaunchBoostSettings:
+  FreqMulti: 1.2
+  BoostRateMs: 1500
+CoreAllocation:
+  CpuSetCore: 4-7
+CoreFramework:
+  SmallCorePath: 0
+  MediumCorePath: 4
+  BigCorePath: 6
+  SuperBigCorePath: -1
+IO_Settings:
+  Scheduler: bfq
+  IO_optimization: true
+CompletelyFairSchedulerValue:
+  sched_child_runs_first: ''
+  sched_rt_period_us: ''
+  sched_rt_runtime_us: ''
+CpuIdle:
+  current_governor: ''
+Cpuset:
+  top_app: 0-7
+  foreground: 0-7
+  restricted: 0-5
+  system_background: 0-3
+  background: 0-3
+Bus_dcvs_Path:
+  CPUllccminPath: ''
+  CPUllccmaxPath: ''
+  CPUddrminPath: ''
+  CPUddrmaxPath: ''
+pGovPath: {
+  }
+powersave:
+  Governor:
+    global: sched_pixel
+    SmallCore: sched_pixel
+    MediumCore: sched_pixel
+    BigCore: sched_pixel
+    SuperBigCore: sched_pixel
+  Freq:
+    SmallCoreMinFreq: min
+    SmallCoreMaxFreq: 1401000
+    MediumCoreMinFreq: min
+    MediumCoreMaxFreq: 1999000
+    BigCoreMinFreq: min
+    BigCoreMaxFreq: 2252000
+    SuperBigCoreMinFreq: min
+    SuperBigCoreMaxFreq: 1700000
+  Uclamp:
+    UclampTopAppMin: '0'
+    UclampTopAppMax: '100'
+    UclampTopApplatency_sensitive: '0'
+    UclampForeGroundMin: '0'
+    UclampForeGroundMax: '70'
+    UclampBackGroundMin: '0'
+    UclampBackGroundMax: '50'
+  Bus_dcvs:
+    CPUllccmin: ''
+    CPUllccmax: ''
+    CPUddrmin: ''
+    CPUddrmax: ''
+  Govsets: {
+    }
+  Other:
+    ufsClkGate: false
+balance:
+  Governor:
+    global: sched_pixel
+    SmallCore: sched_pixel
+    MediumCore: sched_pixel
+    BigCore: sched_pixel
+    SuperBigCore: sched_pixel
+  Freq:
+    SmallCoreMinFreq: min
+    SmallCoreMaxFreq: 1598000
+    MediumCoreMinFreq: min
+    MediumCoreMaxFreq: 2130000
+    BigCoreMinFreq: min
+    BigCoreMaxFreq: 2507000
+    SuperBigCoreMinFreq: min
+    SuperBigCoreMaxFreq: 2300000
+  Uclamp:
+    UclampTopAppMin: '0'
+    UclampTopAppMax: '100'
+    UclampTopApplatency_sensitive: '0'
+    UclampForeGroundMin: '0'
+    UclampForeGroundMax: '70'
+    UclampBackGroundMin: '0'
+    UclampBackGroundMax: '50'
+  Bus_dcvs:
+    CPUllccmin: ''
+    CPUllccmax: ''
+    CPUddrmin: ''
+    CPUddrmax: ''
+  Govsets: {
+    }
+  Other:
+    ufsClkGate: false
+performance:
+  Governor:
+    global: sched_pixel
+    SmallCore: sched_pixel
+    MediumCore: sched_pixel
+    BigCore: sched_pixel
+    SuperBigCore: sched_pixel
+  Freq:
+    SmallCoreMinFreq: min
+    SmallCoreMaxFreq: 1704000
+    MediumCoreMinFreq: min
+    MediumCoreMaxFreq: 2253000
+    BigCoreMinFreq: min
+    BigCoreMaxFreq: 2704000
+    SuperBigCoreMinFreq: min
+    SuperBigCoreMaxFreq: 3000000
+  Uclamp:
+    UclampTopAppMin: '0'
+    UclampTopAppMax: '100'
+    UclampTopApplatency_sensitive: '1'
+    UclampForeGroundMin: '0'
+    UclampForeGroundMax: '80'
+    UclampBackGroundMin: '0'
+    UclampBackGroundMax: '50'
+  Bus_dcvs:
+    CPUllccmin: ''
+    CPUllccmax: ''
+    CPUddrmin: ''
+    CPUddrmax: ''
+  Govsets: {
+    }
+  Other:
+    ufsClkGate: true
+fast:
+  Governor:
+    global: sched_pixel
+    SmallCore: sched_pixel
+    MediumCore: sched_pixel
+    BigCore: sched_pixel
+    SuperBigCore: sched_pixel
+  Freq:
+    SmallCoreMinFreq: min
+    SmallCoreMaxFreq: max
+    MediumCoreMinFreq: min
+    MediumCoreMaxFreq: max
+    BigCoreMinFreq: min
+    BigCoreMaxFreq: max
+    SuperBigCoreMinFreq: min
+    SuperBigCoreMaxFreq: max
+  Uclamp:
+    UclampTopAppMin: '10'
+    UclampTopAppMax: '100'
+    UclampTopApplatency_sensitive: '1'
+    UclampForeGroundMin: '0'
+    UclampForeGroundMax: '80'
+    UclampBackGroundMin: '0'
+    UclampBackGroundMax: '50'
+  Bus_dcvs:
+    CPUllccmin: ''
+    CPUllccmax: ''
+    CPUddrmin: ''
+    CPUddrmax: ''
+  Govsets: {
+    }
+  Other:
+    ufsClkGate: true

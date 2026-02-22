@@ -1,0 +1,3 @@
+scripts:
+  disable_boost: false
+  adj_walt: true
