@@ -182,13 +182,7 @@ pub fn get_default_rules() -> RulesConfig {
         dynamic_enabled: true,
         global_mode: "balance".to_string(),
         app_modes: HashMap::new(),
-                fas_rules: super::config::FasRulesConfig {
-            fps_gears: vec![30.0, 60.0, 90.0, 120.0, 144.0],
-            fps_margin: "3".to_string(),
-            latency_threshold: "".to_string(),
-            poll_interval_ms: "".to_string(),
-            downgrade_delay_ms: "3000".to_string(),
-        },
+        fas_rules: super::config::FasRulesConfig::default(),
     }
 }
 

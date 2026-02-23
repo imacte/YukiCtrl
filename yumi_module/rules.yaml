@@ -3,10 +3,25 @@ dynamic_enabled: true
 global_mode: "balance"
 
 fas_rules:
-  downgrade_delay_ms: 3000  # 桌面/视频：500ms 游戏：3s
-  fps_gears: [30.0, 60.0, 90.0, 120.0, 144.0]
-  fps_margin: "3"
-  latency_threshold: ""
-  poll_interval_ms: ""
+  # === 基础参数 ===
+  fps_gears: [20.0, 24.0, 30.0, 45.0, 60.0, 90.0, 120.0, 144.0]
+  fps_margin: "3.0"         # FPS 容差（帧），EMA 预算 = 1000/(目标fps - margin)
+
+  # === 加载状态机 ===
+  heavy_frame_threshold_ms: 150.0    # 单帧超过此值(ms)判定为重帧，不参与 EMA
+  loading_cumulative_ms: 2500.0      # 连续重帧累计超过此值(ms)才进入加载状态
+  post_loading_ignore_frames: 5      # 退出加载后跳过的抖动帧数
+  post_loading_perf_min: 500.0       # 退出加载后 Perf 下限
+  post_loading_perf_max: 800.0       # 退出加载后 Perf 上限
+
+  # === 蹦床算法 ===
+  instant_error_threshold_ms: 4.0    # 单帧超预算超过此值(ms)触发严重卡顿紧急升频
+                                     # 例：120fps 预算 8.3ms，阈值 4.0 → 单帧 >12.3ms 触发
+  perf_floor: 150.0                  # Perf 指数下限（0-1000），不会低于此值
+
+  # === 频率迟滞 ===
+  freq_hysteresis: 0.015             # 相邻频率档位切换的 Perf 归一化偏离量阈值
+                                     # 越大越不容易来回跳，但响应越迟钝
+                                     # 建议范围：0.01 ~ 0.03
 
 app_modes: {}

@@ -43,26 +43,49 @@ pub struct FasRulesConfig {
     pub fps_gears: Vec<f32>,
     #[serde(default = "default_fps_margin")]
     pub fps_margin: String,
-    #[serde(default)]
-    pub latency_threshold: String,
-    #[serde(default)]
-    pub poll_interval_ms: String,
-    #[serde(default = "default_downgrade_delay_ms")]
-    pub downgrade_delay_ms: String,
+    #[serde(default = "default_heavy_frame_ms")]
+    heavy_frame_threshold_ms: f32,
+    #[serde(default = "default_loading_cumulative_ms")]
+    loading_cumulative_ms: f32,
+    #[serde(default = "default_post_loading_ignore")]
+    post_loading_ignore_frames: u32,
+    #[serde(default = "default_post_loading_perf_min")]
+    post_loading_perf_min: f32,
+    #[serde(default = "default_post_loading_perf_max")]
+    post_loading_perf_max: f32,
+    #[serde(default = "default_instant_error_threshold")]
+    instant_error_threshold_ms: f32,
+    #[serde(default = "default_perf_floor")]
+    perf_floor: f32,
+    #[serde(default = "default_hysteresis")]
+    freq_hysteresis: f32,
 }
 
 fn default_fps_gears() -> Vec<f32> { vec![30.0, 60.0, 90.0, 120.0, 144.0] }
 fn default_fps_margin() -> String { "3".to_string() }
-fn default_downgrade_delay_ms() -> String { "3000".to_string() }
+fn default_heavy_frame_ms() -> f32 { 150.0 }
+fn default_loading_cumulative_ms() -> f32 { 2500.0 }
+fn default_post_loading_ignore() -> u32 { 5 }
+fn default_post_loading_perf_min() -> f32 { 500.0 }
+fn default_post_loading_perf_max() -> f32 { 800.0 }
+fn default_instant_error_threshold() -> f32 { 4.0 }
+fn default_perf_floor() -> f32 { 150.0 }
+fn default_hysteresis() -> f32 { 0.015 }
+
 
 impl Default for FasRulesConfig {
     fn default() -> Self {
         Self {
             fps_gears: default_fps_gears(),
             fps_margin: default_fps_margin(),
-            latency_threshold: "".to_string(),
-            poll_interval_ms: "".to_string(),
-            downgrade_delay_ms: default_downgrade_delay_ms(),
+            heavy_frame_threshold_ms: default_heavy_frame_ms(),
+            loading_cumulative_ms: default_loading_cumulative_ms(),
+            post_loading_ignore_frames: default_post_loading_ignore(),
+            post_loading_perf_min: default_post_loading_perf_min(),
+            post_loading_perf_max: default_post_loading_perf_max(),
+            instant_error_threshold_ms: default_instant_error_threshold(),
+            perf_floor: default_perf_floor(),
+            freq_hysteresis: default_hysteresis(),
         }
     }
 }

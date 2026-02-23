@@ -36,7 +36,7 @@ pub async fn start_fps_loop(tx: Sender<DaemonEvent>) -> Result<(), anyhow::Error
     // 2. 加载 eBPF 程序
     // 使用 Box::leak 是为了满足 aya 的 'static 生命周期要求，
     // 因为这个程序在守护进程整个生命周期内都要存在。
-    let mut bpf = Box::leak(Box::new(Ebpf::load(BPF_DATA)?));
+    let bpf = Box::leak(Box::new(Ebpf::load(BPF_DATA)?));
 
     // 3. 挂载 Uprobe (用户态探针)
     // 我们要挂钩的是 libgui.so 中的 queueBuffer 函数，这是安卓绘制画面的必经之路
