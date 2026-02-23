@@ -47,10 +47,13 @@ pub struct FasRulesConfig {
     pub latency_threshold: String,
     #[serde(default)]
     pub poll_interval_ms: String,
+    #[serde(default = "default_downgrade_delay_ms")]
+    pub downgrade_delay_ms: String,
 }
 
 fn default_fps_gears() -> Vec<f32> { vec![30.0, 60.0, 90.0, 120.0, 144.0] }
 fn default_fps_margin() -> String { "3".to_string() }
+fn default_downgrade_delay_ms() -> String { "3000".to_string() }
 
 impl Default for FasRulesConfig {
     fn default() -> Self {
@@ -59,6 +62,7 @@ impl Default for FasRulesConfig {
             fps_margin: default_fps_margin(),
             latency_threshold: "".to_string(),
             poll_interval_ms: "".to_string(),
+            downgrade_delay_ms: default_downgrade_delay_ms(),
         }
     }
 }

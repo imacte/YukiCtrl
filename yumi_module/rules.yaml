@@ -3,6 +3,7 @@ dynamic_enabled: true
 global_mode: "balance"
 
 fas_rules:
+  downgrade_delay_ms: 3000  # 桌面/视频：500ms 游戏：3s
   fps_gears: [30.0, 60.0, 90.0, 120.0, 144.0]
   fps_margin: "3"
   latency_threshold: ""

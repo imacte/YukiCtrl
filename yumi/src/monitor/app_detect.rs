@@ -187,6 +187,7 @@ pub fn get_default_rules() -> RulesConfig {
             fps_margin: "3".to_string(),
             latency_threshold: "".to_string(),
             poll_interval_ms: "".to_string(),
+            downgrade_delay_ms: "3000".to_string(),
         },
     }
 }

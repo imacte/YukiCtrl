@@ -69,15 +69,11 @@ impl CpuScheduler {
 
         let mode_name = self.current_mode_name.lock().unwrap().clone();
 
-        // 在函数开头判断是否为特殊的 "fas" 模式
         if mode_name == "fas" {
-            log::info!("{}", t("fas-detected"));
-            // 进入 FAS 模式前，先尝试将调度器切为 performance
-            self.apply_fas_governor()?; 
-            self.disable_feas()?;
+            log::debug!("Currently in FAS mode, Scheduler is skipping static settings application.");
             return Ok(());
         }
-        
+
         let current_mode = self.get_current_mode()?;
 
         log::info!("{}", t_with_args(
@@ -203,42 +199,6 @@ impl CpuScheduler {
         Ok(())
     }
     
-    /// 为 FAS 模式专属设置调度器 (尝试 performance，没有则保持默认)
-    fn apply_fas_governor(&self) -> Result<()> {
-        let config = self.config.read().unwrap();
-        let core_info = &config.core_framework;
-
-        let cores_to_process = [
-            core_info.small_core_path,
-            core_info.medium_core_path,
-            core_info.big_core_path,
-            core_info.super_big_core_path,
-        ];
-
-        for core_path_id in cores_to_process {
-            if core_path_id == -1 { continue; }
-            
-            let gov_path = format!("/sys/devices/system/cpu/cpufreq/policy{}/scaling_governor", core_path_id);
-            let avail_gov_path = format!("/sys/devices/system/cpu/cpufreq/policy{}/scaling_available_governors", core_path_id);
-            
-            // 检查系统当前 CPU 核心是否支持 performance 调度器
-            if let Ok(avail_govs) = utils::read_file_content(&avail_gov_path) {
-                if avail_govs.contains("performance") {
-                    let _ = utils::try_write_file(&gov_path, "performance");
-                    log::debug!("Set policy{} governor to performance for FAS", core_path_id);
-                } else {
-                    // 如果不支持 performance，什么都不写，内核会自动维持现有的默认调度器
-                    log::debug!("'performance' governor not available for policy{}, keeping default", core_path_id);
-                }
-            } else {
-                // 如果因权限或内核魔改导致无法读取可用列表，直接盲写
-                // 这是安全的，因为内核会自动拒绝非法写入，从而天然实现“失败则保持默认”
-                let _ = utils::try_write_file(&gov_path, "performance");
-            }
-        }
-        Ok(())
-    }
-
     fn apply_gov_sets(
         &self,
         current_mode: &Mode,
