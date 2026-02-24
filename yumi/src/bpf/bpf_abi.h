@@ -39,5 +39,6 @@ struct bpf_map_def {
 // Map 类型常量
 enum {
     BPF_MAP_TYPE_HASH = 1,
+    BPF_MAP_TYPE_ARRAY = 2,
     BPF_MAP_TYPE_PERF_EVENT_ARRAY = 4,
 };

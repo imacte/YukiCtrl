@@ -17,6 +17,7 @@
 
 use std::sync::{Arc, Mutex, RwLock, mpsc};
 use std::thread;
+use std::time::Instant;
 use anyhow::Result;
 use std::sync::atomic::{AtomicBool, Ordering};
 pub mod config;
@@ -44,6 +45,8 @@ pub fn start_scheduler_thread(rx: mpsc::Receiver<DaemonEvent>) -> Result<()> {
     let shared_mode_name = Arc::new(Mutex::new("balance".to_string())); 
     let sys_path_exist = Arc::new(utils::SysPathExist::new());
     let is_boosting = Arc::new(AtomicBool::new(false));
+    // [FIX-FLOAT-2] FAS 挂起标志：让 boost 线程感知 FAS 暂停状态
+    let fas_suspended = Arc::new(AtomicBool::new(false));
 
     // 3. 启动 AppLaunchBoost 线程
     if shared_config.read().unwrap().function.app_launch_boost {
@@ -51,11 +54,12 @@ pub fn start_scheduler_thread(rx: mpsc::Receiver<DaemonEvent>) -> Result<()> {
         let mode_clone = shared_mode_name.clone();
         let sys_path_clone = sys_path_exist.clone();
         let boost_clone = is_boosting.clone();
+        let fas_suspended_clone = fas_suspended.clone();
         
         thread::Builder::new()
             .name("applaunch_boost".to_string())
             .spawn(move || {
-                let scheduler = CpuScheduler::new(config_clone, mode_clone, sys_path_clone, boost_clone);
+                let scheduler = CpuScheduler::new(config_clone, mode_clone, sys_path_clone, boost_clone, fas_suspended_clone);
                 scheduler.app_launch_boost_loop();
             })?;
         
@@ -67,6 +71,7 @@ pub fn start_scheduler_thread(rx: mpsc::Receiver<DaemonEvent>) -> Result<()> {
     let mode_clone = shared_mode_name.clone();
     let sys_path_clone = sys_path_exist.clone();
     let boost_clone = is_boosting.clone();
+    let fas_suspended_clone = fas_suspended.clone();
     
     thread::Builder::new()
         .name("config_watcher".to_string())
@@ -97,7 +102,7 @@ pub fn start_scheduler_thread(rx: mpsc::Receiver<DaemonEvent>) -> Result<()> {
                             continue; 
                         }
                         
-                        let scheduler = CpuScheduler::new(config_clone.clone(), mode_clone.clone(), sys_path_clone.clone(), boost_clone.clone());
+                        let scheduler = CpuScheduler::new(config_clone.clone(), mode_clone.clone(), sys_path_clone.clone(), boost_clone.clone(), fas_suspended_clone.clone());
                         if let Err(e) = scheduler.apply_all_settings() {
                             log::error!("{}", t_with_args("config-apply-mode-failed", &fluent_args!("error" => e.to_string())));
                         }
@@ -119,6 +124,7 @@ pub fn start_scheduler_thread(rx: mpsc::Receiver<DaemonEvent>) -> Result<()> {
     let mode_clone = shared_mode_name.clone();
     let sys_path_clone = sys_path_exist.clone();
     let boost_clone = is_boosting.clone();
+    let fas_suspended_clone = fas_suspended.clone();
 
     thread::Builder::new()
         .name("scheduler_ipc".to_string())
@@ -130,6 +136,11 @@ pub fn start_scheduler_thread(rx: mpsc::Receiver<DaemonEvent>) -> Result<()> {
             
             // 初始化 FAS 控制器 (现在是空的，等待动态加载)
             let mut fas_controller = crate::fas::fas::FasController::new();
+
+            let mut fas_suspended_at: Option<Instant> = None;
+            let mut fas_suspended_package = String::new();
+            /// FAS 挂起宽限期（秒）：小窗操作通常在 1-3 秒内完成
+            const FAS_SUSPEND_GRACE_SECS: u64 = 5;
             
             for msg in rx {
                 match msg {
@@ -151,14 +162,59 @@ pub fn start_scheduler_thread(rx: mpsc::Receiver<DaemonEvent>) -> Result<()> {
 
                             // 1. 优先处理 FAS 模式的初始化，不被 Boost 拦截
                             if mode == "fas" {
-                                let config_lock = config_clone.read().unwrap();
-                                fas_controller.load_policies(&config_lock);
-                                log::info!("Entered FAS mode, FAS controller is now taking over CPU frequencies.");
+                                // 检查是否可以从挂起状态恢复
+                                let can_resume = if let Some(suspended_at) = fas_suspended_at {
+                                    let elapsed = suspended_at.elapsed().as_secs();
+                                    let same_pkg = fas_suspended_package == package_name;
+                                    let within_grace = elapsed < FAS_SUSPEND_GRACE_SECS;
+                                    let has_policies = !fas_controller.policies.is_empty();
+                                    same_pkg && within_grace && has_policies
+                                } else {
+                                    false
+                                };
+
+                                if can_resume {
+                                    // 恢复路径：FAS 控制器保留了所有状态，直接继续工作
+                                    fas_suspended_at = None;
+                                    fas_suspended_package.clear();
+                                    fas_suspended_clone.store(false, Ordering::SeqCst);
+                                    log::info!("FAS: ♻️ resumed from suspend (pkg={}, policies intact, no reinit)",
+                                        package_name);
+                                } else {
+                                    // 全量初始化路径：首次进入或宽限期已过
+                                    fas_suspended_at = None;
+                                    fas_suspended_package.clear();
+                                    fas_suspended_clone.store(false, Ordering::SeqCst);
+                                    let config_lock = config_clone.read().unwrap();
+                                    fas_controller.load_policies(&config_lock);
+                                    log::info!("Entered FAS mode, FAS controller is now taking over CPU frequencies.");
+                                }
                             } else {
-                                // 2. 清理 FAS 策略
-                                fas_controller.policies.clear();
+                                // 离开 FAS：挂起而非销毁
+                                if old_mode == "fas" && !fas_controller.policies.is_empty() {
+                                    fas_suspended_at = Some(Instant::now());
+                                    fas_suspended_package = package_name.clone();
+                                    // 通知 boost 线程
+                                    fas_suspended_clone.store(true, Ordering::SeqCst);
+                                    // 注意：不清空 fas_controller.policies！
+                                    // 控制器状态完整保留，等待可能的恢复
+                                    log::info!("FAS: ⏸️ suspended (pkg={}, grace={}s, policies preserved)",
+                                        package_name, FAS_SUSPEND_GRACE_SECS);
+                                } else if fas_suspended_at.is_none() {
+                                    // 非 FAS 相关的模式切换，正常清理
+                                    fas_controller.policies.clear();
+                                }
                                 
-                                // 3. 对于常规的静态模式，遇到 Boost 才跳过频率应用
+                                // FAS 挂起期间阻止静态调度写入
+                                // 如果 FAS 刚被挂起（小窗场景），不要应用静态模式的频率设置，
+                                // 因为这会改掉 governor (performance→schedutil) 和频率，
+                                // 恢复时 FAS 需要重新设置 governor。
+                                if fas_suspended_at.is_some() {
+                                    log::info!("FAS suspended, skipping static scheduler to preserve FAS sysfs state");
+                                    continue;
+                                }
+
+                                // 对于常规的静态模式，遇到 Boost 才跳过频率应用
                                 if boost_clone.load(Ordering::SeqCst) {
                                     log::info!("{}", t("scheduler-boost-active-ignore"));
                                     continue;
@@ -169,7 +225,8 @@ pub fn start_scheduler_thread(rx: mpsc::Receiver<DaemonEvent>) -> Result<()> {
                                     config_clone.clone(), 
                                     mode_clone.clone(), 
                                     sys_path_clone.clone(), 
-                                    boost_clone.clone()
+                                    boost_clone.clone(),
+                                    fas_suspended_clone.clone()
                                 );
                                 
                                 if let Err(e) = scheduler.apply_all_settings() {
@@ -184,6 +241,24 @@ pub fn start_scheduler_thread(rx: mpsc::Receiver<DaemonEvent>) -> Result<()> {
                         if current_mode == "fas" {
                             fas_controller.update_frame(frame_delta_ns);
                         }
+                        // FAS 挂起期间如果还收到帧数据，
+                        // 说明游戏仍在渲染（小窗模式下游戏没暂停），
+                        // 也转发给控制器保持状态更新
+                        else if fas_suspended_at.is_some() && !fas_controller.policies.is_empty() {
+                            fas_controller.update_frame(frame_delta_ns);
+                        }
+                    }
+                }
+
+                // 检查挂起宽限期是否超时
+                // 超时后真正清理 FAS 状态，允许下次进入时全量初始化
+                if let Some(suspended_at) = fas_suspended_at {
+                    if suspended_at.elapsed().as_secs() >= FAS_SUSPEND_GRACE_SECS {
+                        log::info!("FAS: ⏹️ suspend grace expired, clearing FAS state");
+                        fas_controller.policies.clear();
+                        fas_suspended_at = None;
+                        fas_suspended_package.clear();
+                        fas_suspended_clone.store(false, Ordering::SeqCst);
                     }
                 }
             }

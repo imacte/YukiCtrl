@@ -33,6 +33,8 @@ pub struct CpuScheduler {
     current_mode_name: Arc<Mutex<String>>,
     sys_path_exist: Arc<SysPathExist>,
     is_boosting: Arc<AtomicBool>,
+    // FAS 挂起标志：boost 线程通过此标志感知 FAS 暂停
+    fas_suspended: Arc<AtomicBool>,
 }
 
 impl CpuScheduler {
@@ -41,12 +43,14 @@ impl CpuScheduler {
         initial_mode: Arc<Mutex<String>>,
         sys_path_exist: Arc<SysPathExist>,
         is_boosting: Arc<AtomicBool>,
+        fas_suspended: Arc<AtomicBool>,
     ) -> Self {
         Self {
             config,
             current_mode_name: initial_mode,
             sys_path_exist,
             is_boosting,
+            fas_suspended,
         }
     }
 
@@ -277,6 +281,14 @@ impl CpuScheduler {
             let mode_name_before = self.current_mode_name.lock().unwrap().clone();
 
             if mode_name_before == "fas" {
+                continue;
+            }
+
+            // FAS 挂起期间跳过 boost
+            // 小窗操作会短暂切离 FAS，但 FAS 控制器仍持有 sysfs 状态。
+            // 此时 boost 写入频率会与 FAS 恢复后的写入冲突。
+            if self.fas_suspended.load(Ordering::SeqCst) {
+                log::info!("FAS suspended, skipping app launch boost to avoid sysfs conflict");
                 continue;
             }
 

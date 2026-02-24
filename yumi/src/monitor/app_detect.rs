@@ -253,6 +253,41 @@ pub fn app_detection_loop(
             Err(_) => (last_package.clone(), 0), 
         };
 
+        // ══════════════════════════════════════════════════════════════
+        // [FIX-FLOAT-3] 小窗/浮窗防抖
+        //
+        // 原问题：用户在 FAS 模式下点击小窗时，cgroup top-app 短暂切到
+        //   小窗应用。3 秒轮询刚好命中这个瞬间时，会发送一次"离开游戏"
+        //   + 一次"回到游戏"的 ModeChange，导致 FAS 状态被重置。
+        //
+        // 修复：当检测到包名变化时，等待 500ms 后重新检测。
+        //   如果包名又变回原来的，说明只是短暂的焦点切换（小窗操作），
+        //   直接忽略这次变化，不发送任何 ModeChange 事件。
+        // ══════════════════════════════════════════════════════════════
+        let (current_package, current_pid) = if current_package != last_package 
+            && !last_package.is_empty() 
+            && !current_package.is_empty() 
+        {
+            // 检测到变化，等待 500ms 后重新确认
+            thread::sleep(Duration::from_millis(500));
+            match get_focused_app_from_cgroup() {
+                Ok((confirmed_pkg, confirmed_pid)) => {
+                    if confirmed_pkg == last_package {
+                        // 包名变回去了，说明是瞬态切换（小窗操作），忽略
+                        debug!("App switch debounced: {} → {} → {} (transient, ignored)",
+                            last_package, current_package, confirmed_pkg);
+                        (last_package.clone(), 0) // 保持不变，不触发下方的模式切换逻辑
+                    } else {
+                        // 确认是真正的应用切换
+                        (confirmed_pkg, confirmed_pid)
+                    }
+                }
+                Err(_) => (current_package, current_pid),
+            }
+        } else {
+            (current_package, current_pid)
+        };
+
         let current_temp = if !temp_sensor_path.is_empty() {
             utils::read_f64_from_file(&temp_sensor_path).unwrap_or(0.0) / 1000.0
         } else { 0.0 };
