@@ -14,8 +14,8 @@ function:
   AppLaunchBoost: true
 AppLaunchBoostSettings:
   BoostRateMs: 200
-  SmallCoreBoostFreq: “”
-  MediumCoreBoostFreq: “”
+  SmallCoreBoostFreq: ""
+  MediumCoreBoostFreq: ""
   BigCoreBoostFreq: ""
   SuperBigCoreBoostFreq: ""
 CoreAllocation:
