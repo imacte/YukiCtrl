@@ -47,9 +47,9 @@ mod de_util {
         {
             match value {
                 "min" => Ok(0),
-                "max" => Ok(9999999),
+                "max" | "" => Ok(9999999), // 空字符串视为默认值 (max)
                 _ => {
-                    Err(de::Error::unknown_variant(value, &["min", "max"]))
+                    Err(de::Error::unknown_variant(value, &["min", "max", ""]))
                 }
             }
         }

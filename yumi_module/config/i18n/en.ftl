@@ -49,31 +49,51 @@ screen-state-change-detected = [Screen] State change detected via '{ $source }'.
 screen-state-changed-value = [Screen] Screen state changed: { $state }
 screen-netlink-started = [Screen] Started netlink-sys socket listener.
 
-# --- Scheduler (Additions) ---
+# --- Scheduler ---
 scheduler-ipc-started = [Scheduler] IPC Channel listener started.
 scheduler-mode-change-request = [Scheduler] Mode change request: { $old } -> { $new } (Pkg: { $pkg }, Temp: { $temp })
 scheduler-boost-active-ignore = [Scheduler] Boost active, ignoring mode apply.
 scheduler-apply-failed = [Scheduler] Failed to apply settings: { $error }
 scheduler-channel-closed = [Scheduler] Channel closed! Thread exiting.
-config-apply-mode-failed = Failed to apply reloaded mode settings: { $error }
-config-apply-tweaks-failed = Failed to apply reloaded system tweaks: { $error }
-app-launch-watch-failed = Failed to watch for app launch: { $error }
-boost-apply-failed = Failed to apply boost frequencies: { $error }
-boost-restore-freq-failed = Failed to restore frequencies: { $error }
-boost-mode-changed = Mode changed during boost ({ $old } -> { $new }), applying all settings.
-boost-mode-apply-failed = Failed to apply new mode settings after boost: { $error }
-boost-get-mode-failed = Could not get current mode in boost loop: { $error }
+
+# --- Scheduler: Config Watcher (added missing keys) ---
+config-reloading = [Config] Config file change detected, reloading...
+config-reloaded-success = [Config] Config reloaded successfully.
+config-reload-fail = [Config] Config reload failed: { $error }
+config-watch-error = [Config] Failed to watch config directory: { $error }
+config-apply-mode-failed = [Config] Failed to apply reloaded mode settings: { $error }
+config-apply-tweaks-failed = [Config] Failed to apply reloaded system tweaks: { $error }
+
+# --- Scheduler: Boost (added missing keys) ---
+boost-active-defer-config-apply = [Boost] Boost active, deferring config apply.
+boost-active-skipping-apply-all-settings = [Boost] Boost active, skipping apply_all_settings.
+app-launch-watch-failed = [Boost] Failed to watch for app launch: { $error }
+boost-apply-failed = [Boost] Failed to apply boost frequencies: { $error }
+boost-restore-freq-failed = [Boost] Failed to restore frequencies: { $error }
+boost-mode-changed = [Boost] Mode changed during boost ({ $old } -> { $new }), applying all settings.
+boost-mode-apply-failed = [Boost] Failed to apply new mode settings after boost: { $error }
+boost-get-mode-failed = [Boost] Could not get current mode in boost loop: { $error }
+applaunch-detected-boosting-frequencies = [Boost] App launch detected, boosting frequencies...
+boost-finished-restoring-settings = [Boost] Boost finished, restoring settings.
+appLaunchboost-thread-created = [Boost] AppLaunchBoost thread created.
+
+# --- Scheduler: Core Allocation ---
 pidof-failed = Failed to execute pidof for '{ $name }': { $error }
 process-not-found = Process '{ $name }' not found, skipping.
 cpuset-write-failed = Failed to write to cpuset for { $name }: { $error }
 cpuctl-write-failed = Failed to write to cpuctl for { $name }: { $error }
 thread-core-allocation-log = Thread core allocation completed.
 main-config-watch-thread-create = Main config watcher thread created.
-applaunch-detected-boosting-frequencies = App launch detected, boosting frequencies...
-boost-finished-restoring-settings = Boost finished, restoring settings.
-appLaunchboost-thread-created = AppLaunchBoost thread created.
+
+# --- Scheduler: Settings ---
 apply-settings-for-mode = Applying settings for mode: { $mode }
 settings-applied-success = Settings for mode '{ $mode }' applied successfully.
+load-balancing-start = Load balancing settings applied.
+apply-cpuset-start = CPU set settings applied.
+apply-cpu-idle-governor-start = CPU idle governor settings applied.
+apply-io-settings-start = I/O settings applied.
+attempted-to-enable-eas-scheduler-settings = Attempted to enable EAS scheduler.
+attempted-to-disable-eas-scheduler = Attempted to disable EAS scheduler.
 
 # --- Logger ---
 log-level-updated = Log level updated to: { $level }

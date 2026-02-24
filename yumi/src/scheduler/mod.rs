@@ -190,28 +190,48 @@ pub fn start_scheduler_thread(rx: mpsc::Receiver<DaemonEvent>) -> Result<()> {
                                     log::info!("Entered FAS mode, FAS controller is now taking over CPU frequencies.");
                                 }
                             } else {
-                                // 离开 FAS：挂起而非销毁
+                                // ==================== [FIX] FAS → 静态模式切换逻辑 ====================
+                                //
+                                // 原始 BUG：
+                                //   当 old_mode == "fas" 时，先设置 fas_suspended_at = Some(...)，
+                                //   然后紧接着检查 fas_suspended_at.is_some() → 必然为 true → continue，
+                                //   导致静态模式的 apply_all_settings() 永远不会被执行。
+                                //   同时 fas_suspended AtomicBool 卡在 true，导致 AppLaunchBoost 线程
+                                //   也被阻塞，不输出日志。
+                                //
+                                // 修复思路：
+                                //   将"FAS 刚被挂起"和"已处于挂起状态收到其他事件"两种情况分开处理。
+                                //   FAS 刚挂起时直接 continue（保护 sysfs 状态）；
+                                //   已处于挂起状态时也 continue（等待宽限期超时）；
+                                //   其他所有情况正常走静态调度。
+                                // ====================================================================
+
                                 if old_mode == "fas" && !fas_controller.policies.is_empty() {
+                                    // 刚离开 FAS：挂起而非销毁，保护 sysfs 状态
                                     fas_suspended_at = Some(Instant::now());
                                     fas_suspended_package = package_name.clone();
-                                    // 通知 boost 线程
                                     fas_suspended_clone.store(true, Ordering::SeqCst);
-                                    // 注意：不清空 fas_controller.policies！
-                                    // 控制器状态完整保留，等待可能的恢复
                                     log::info!("FAS: ⏸️ suspended (pkg={}, grace={}s, policies preserved)",
                                         package_name, FAS_SUSPEND_GRACE_SECS);
-                                } else if fas_suspended_at.is_none() {
-                                    // 非 FAS 相关的模式切换，正常清理
-                                    fas_controller.policies.clear();
+                                    // 不应用静态模式，保留 FAS 的 governor/频率设置以便快速恢复
+                                    continue;
                                 }
-                                
-                                // FAS 挂起期间阻止静态调度写入
-                                // 如果 FAS 刚被挂起（小窗场景），不要应用静态模式的频率设置，
-                                // 因为这会改掉 governor (performance→schedutil) 和频率，
-                                // 恢复时 FAS 需要重新设置 governor。
+
+                                // 已经处于 FAS 挂起状态时（非本次触发，而是之前遗留的），
+                                // 也跳过静态调度写入，等待宽限期超时后再允许
                                 if fas_suspended_at.is_some() {
                                     log::info!("FAS suspended, skipping static scheduler to preserve FAS sysfs state");
                                     continue;
+                                }
+
+                                // 非 FAS 相关的模式切换，正常清理 FAS 控制器
+                                if old_mode == "fas" {
+                                    // old_mode == "fas" 但 policies 已经为空（可能宽限期已过被清理），
+                                    // 正常清理残余状态
+                                    fas_controller.policies.clear();
+                                    fas_suspended_at = None;
+                                    fas_suspended_package.clear();
+                                    fas_suspended_clone.store(false, Ordering::SeqCst);
                                 }
 
                                 // 对于常规的静态模式，遇到 Boost 才跳过频率应用

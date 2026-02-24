@@ -360,8 +360,12 @@ impl CpuScheduler {
 
         for (core_path, freq) in cores_to_boost {
             if core_path != -1 {
-                let path = format!("/sys/devices/system/cpu/cpufreq/policy{}/scaling_max_freq", core_path);
-                let _ = utils::try_write_file(path, freq.to_string());
+                // 先写 max 再写 min，避免 min > 旧 max 被内核拒绝
+                let max_path = format!("/sys/devices/system/cpu/cpufreq/policy{}/scaling_max_freq", core_path);
+                let min_path = format!("/sys/devices/system/cpu/cpufreq/policy{}/scaling_min_freq", core_path);
+                let _ = utils::try_write_file(&max_path, freq.to_string());
+                // 同时拉高 min_freq，强制 CPU 频率不低于 boost 值
+                let _ = utils::try_write_file(&min_path, freq.to_string());
             }
         }
         Ok(())
