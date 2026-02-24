@@ -81,8 +81,7 @@ fn default_instant_error_threshold() -> f32 { 4.0 }
 fn default_perf_floor() -> f32 { 150.0 }
 fn default_hysteresis() -> f32 { 0.015 }
 
-/// sysfs 频率写入器，带缓存和强制写入支持。
-/// 强制写入用于对抗 thermal-engine 等外部进程偷改频率。
+/// sysfs 频率写入器，带缓存和强制写入
 pub struct FastWriter {
     file: Option<File>,
     last_value: Option<u32>,
@@ -95,22 +94,18 @@ impl FastWriter {
         let file = OpenOptions::new().write(true).open(path_ref)
             .map_err(|e| log::error!("FAS: failed to open {}: {}", path_ref.display(), e))
             .ok();
-        // 不修改 sysfs 权限为 0o444（拦不住 root 级 thermal-engine，且可能导致写入失败）
         Self { file, last_value: None }
     }
 
-    /// 带缓存写入（值未变则跳过）
     pub fn write_value(&mut self, value: u32) {
         if self.last_value == Some(value) { return; }
         self.do_write(value);
     }
 
-    /// 强制写入，无视缓存（用于 apply_freq_safe 和 mismatch 修复）
     pub fn write_value_force(&mut self, value: u32) {
         self.do_write(value);
     }
 
-    /// 清除缓存，下次 write_value 必定执行写入
     pub fn invalidate(&mut self) {
         self.last_value = None;
     }
@@ -129,18 +124,19 @@ impl FastWriter {
     }
 }
 
-/// CPU 频率策略控制器，始终强制写入以对抗外部干扰。
+/// CPU 频率策略控制器
 pub struct PolicyController {
     pub max_writer: FastWriter,
     pub min_writer: FastWriter,
     pub available_freqs: Vec<u32>,
     pub current_freq: u32,
     pub policy_id: usize,
+    pub mismatch_count: u32,
+    pub external_lock_cooldown: u32, // >0 时退避，每帧递减，到期试探恢复
 }
 
 impl PolicyController {
     pub fn apply_freq_safe(&mut self, target_freq: u32) {
-        // 不跳过 target == current_freq，外部可能已改掉实际频率
         let range = (*self.available_freqs.last().unwrap() - *self.available_freqs.first().unwrap()) as f32;
         let percentage = if range > 0.0 {
             ((target_freq - *self.available_freqs.first().unwrap()) as f32 / range * 100.0) as u32
@@ -164,7 +160,6 @@ impl PolicyController {
         self.current_freq = target_freq;
     }
 
-    /// 强制重写当前频率（用于 mismatch 修复）
     pub fn force_reapply(&mut self) {
         self.max_writer.invalidate();
         self.min_writer.invalidate();
@@ -194,7 +189,6 @@ impl FpsWindow {
         let len = if self.filled { 120 } else { self.pos.max(1) };
         self.buf[..len].iter().sum::<f32>() / len as f32
     }
-    /// 最近 n 帧的均值（短窗口，避免被120帧历史稀释）
     fn recent_mean(&self, n: usize) -> f32 {
         let total = if self.filled { 120 } else { self.pos };
         if total == 0 { return 0.0; }
@@ -206,7 +200,6 @@ impl FpsWindow {
         }
         sum / count as f32
     }
-    /// 最近 n 帧的最大值（用于 probe 等短窗口场景）
     fn recent_max(&self, n: usize) -> f32 {
         let total = if self.filled { 120 } else { self.pos };
         if total == 0 { return 0.0; }
@@ -218,7 +211,6 @@ impl FpsWindow {
         }
         max_val
     }
-    /// 标准差（用于场景过渡检测，CV = stddev/mean 判断帧率波动程度）
     fn stddev(&self) -> f32 {
         let len = if self.filled { 120 } else { self.pos.max(1) };
         let avg = self.mean();
@@ -233,73 +225,47 @@ impl FpsWindow {
 
 // ── 常量 ──
 
-/// 重帧序列中允许夹杂的非重帧容忍帧数
 const LOADING_NORMAL_TOLERANCE: u32 = 3;
-/// 时间窗口内反复进出 loading 达此次数则进入持续加载模式
 const SUSTAINED_LOADING_CYCLE_THRESHOLD: u32 = 3;
-/// 持续加载循环计数的时间窗口（10秒）
 const SUSTAINED_LOADING_WINDOW_NS: u64 = 10_000_000_000;
-/// 持续加载模式下退出后需观察的稳定帧数
 const SUSTAINED_POST_LOADING_IGNORE: u32 = 30;
-/// 退出 loading 后的降档保护帧数
 const POST_LOADING_DOWNGRADE_GUARD: u32 = 90;
 
-/// 软加载：avg_fps 低于目标帧率此比例时疑似加载
 const SOFT_LOADING_FPS_RATIO: f32 = 0.5;
-/// 软加载：perf 高于此阈值且 fps 仍低 → 提频无效
 const SOFT_LOADING_PERF_THRESHOLD: f32 = 700.0;
-/// 软加载：需连续满足条件的帧数
 const SOFT_LOADING_CONFIRM_FRAMES: u32 = 30;
-/// 软加载状态下 perf 压制目标
 const SOFT_LOADING_PERF_CAP: f32 = 400.0;
-/// 退出软加载需连续正常的帧数（均值恢复路径）
 const SOFT_LOADING_EXIT_FRAMES: u32 = 45;
-/// 突破检测：recent_mean 达目标此比例视为引擎解锁
 const SOFT_LOADING_BREAKTHROUGH_FPS_RATIO: f32 = 0.65;
-/// 突破检测的短窗口帧数
 const SOFT_LOADING_BREAKTHROUGH_WINDOW: usize = 15;
-/// 突破路径的退出确认帧数
 const SOFT_LOADING_EXIT_FRAMES_BREAKTHROUGH: u32 = 20;
-/// probe 间隔帧数
 const SOFT_LOADING_PROBE_INTERVAL: u32 = 120;
-/// probe 持续帧数
 const SOFT_LOADING_PROBE_DURATION: u32 = 15;
-/// probe 期间 perf 上限
 const SOFT_LOADING_PROBE_PERF_CAP: f32 = 700.0;
-/// probe 后帧率提升超此比例则退出软加载
 const SOFT_LOADING_PROBE_FPS_GAIN_RATIO: f32 = 0.3;
 
-/// 硬加载期间 perf 下限（保证加载有足够 CPU）
 const LOADING_PERF_FLOOR: f32 = 600.0;
-/// 硬加载期间 perf 上限（IO 密集型，高频浪费功耗）
 const LOADING_PERF_CEILING: f32 = 700.0;
-/// 退出 loading 后的重入冷却帧数，防止 exit→重帧→re-enter 死循环
 const LOADING_REENTRY_COOLDOWN: u32 = 60;
 
-/// 单帧间隔超此值视为应用切换/息屏（毫秒）
 const APP_SWITCH_GAP_MS: f32 = 3000.0;
-/// 应用切换恢复后的初始 perf
 const APP_SWITCH_RESUME_PERF: f32 = 600.0;
-/// 应用切换恢复后跳过的帧数
 const APP_SWITCH_IGNORE_FRAMES: u32 = 8;
 
-/// 定期强制重写频率的间隔帧数
 const FREQ_FORCE_REAPPLY_INTERVAL: u32 = 30;
-
-/// max_ns 固定上限（毫秒），消除高帧率下 heavy 检测盲区
 const FIXED_MAX_FRAME_MS: f32 = 500.0;
 
-/// 变异系数超此值视为场景过渡
 const SCENE_TRANSITION_CV_THRESHOLD: f32 = 0.4;
-/// 场景过渡期间暂停降档的帧数
 const SCENE_TRANSITION_GUARD_FRAMES: u32 = 60;
 
-/// crit 后的衰减冷却帧数
-const JANK_COOLDOWN_FRAMES_CRIT: u32 = 20;
-/// heavy 后的衰减冷却帧数
-const JANK_COOLDOWN_FRAMES_HEAVY: u32 = 10;
-/// bounce 后的衰减冷却帧数
-const JANK_COOLDOWN_FRAMES_BOUNCE: u32 = 5;
+const JANK_COOLDOWN_FRAMES_CRIT: u32 = 10;
+const JANK_COOLDOWN_FRAMES_HEAVY: u32 = 5;
+
+const SCENE_TRANSITION_MAX_CONTINUOUS: u32 = 180;    // 防无限续命硬上限
+const SCENE_TRANSITION_FPS_FLOOR_RATIO: f32 = 0.3;  // 低于此比例视为加载非过渡
+const SCENE_TRANSITION_FORCE_EXIT_FRAMES: u32 = 60;  // 连续低帧强制退出 guard
+
+const MISMATCH_LOCK_THRESHOLD: u32 = 3; // 连续 mismatch 触发退避
 
 pub struct FasController {
     fps_gears: Vec<f32>,
@@ -321,24 +287,18 @@ pub struct FasController {
     post_loading_ignore: u32,
     upgrade_cooldown: u32,
     gear_change_dampen_frames: u32,
-    // 软加载检测
     soft_loading_confirm: u32,
     is_in_soft_loading: bool,
     soft_loading_exit_confirm: u32,
     soft_loading_frames_in_state: u32,
     soft_loading_probe_countdown: u32,
     soft_loading_probe_avg_before: f32,
-    // 重帧容忍窗口
     normal_frame_tolerance: u32,
-    // 持续加载检测
     loading_cycle_count: u32,
     loading_cycle_first_ns: u64,
     sustained_loading: bool,
-    // 退出 loading 后的降档保护
     post_loading_downgrade_guard: u32,
-    // 重入冷却
     loading_reentry_cooldown: u32,
-    // 可配置参数
     heavy_frame_threshold_ms: f32,
     loading_cumulative_ms: f32,
     post_loading_ignore_frames: u32,
@@ -347,14 +307,12 @@ pub struct FasController {
     instant_error_threshold_ms: f32,
     perf_floor: f32,
     freq_hysteresis: f32,
-    // 帧时间累加器
     frame_time_accumulator_ns: u64,
     init_time: Instant,
-    // 频率强制重写计数器
     freq_force_counter: u32,
-    // 场景过渡降档保护
     scene_transition_guard: u32,
-    // 掉帧后衰减冷却
+    scene_transition_continuous: u32,
+    scene_transition_low_fps_frames: u32,
     jank_cooldown: u32,
 }
 
@@ -404,11 +362,12 @@ impl FasController {
             init_time: Instant::now(),
             freq_force_counter: 0,
             scene_transition_guard: 0,
+            scene_transition_continuous: 0,
+            scene_transition_low_fps_frames: 0,
             jank_cooldown: 0,
         }
     }
 
-    /// 基于最高档帧率计算 min_ns（保证任何档位都能看到快帧，避免升档自锁）
     fn max_gear_min_ns(&self) -> u64 {
         let max_gear = self.fps_gears.iter().copied().fold(60.0_f32, f32::max);
         let max_gear_budget_ns = (1_000_000_000.0 / max_gear) as u64;
@@ -485,6 +444,8 @@ impl FasController {
                     available_freqs: avail_freqs,
                     current_freq: max_f,
                     policy_id: policy_id as usize,
+                    mismatch_count: 0,
+                    external_lock_cooldown: 0,
                 });
 
                 if max_f > global_max { global_max = max_f; }
@@ -525,6 +486,8 @@ impl FasController {
         self.frame_time_accumulator_ns = 0;
         self.freq_force_counter = 0;
         self.scene_transition_guard = 0;
+        self.scene_transition_continuous = 0;
+        self.scene_transition_low_fps_frames = 0;
         self.jank_cooldown = 0;
 
         info!("FAS init | target:{:.0}fps margin:{:.1} clusters:{} perf:{:.0}",
@@ -545,14 +508,22 @@ impl FasController {
         self.apply_freqs();
     }
 
-    /// 将 perf_index 映射到频率并应用，含迟滞防抖
+    /// perf_index → 频率映射，含迟滞防抖
     fn apply_freqs(&mut self) {
-        // 定期强制写入，对抗外部干扰
         self.freq_force_counter = self.freq_force_counter.wrapping_add(1);
         let force_this_cycle = self.freq_force_counter % FREQ_FORCE_REAPPLY_INTERVAL == 0;
 
         let ratio = self.perf_index / 1000.0;
         for policy in self.policies.iter_mut() {
+            // 外部锁定退避：递减冷却，到期试探恢复
+            if policy.external_lock_cooldown > 0 {
+                policy.external_lock_cooldown -= 1;
+                if policy.external_lock_cooldown == 0 {
+                    log::info!("FAS[P{}] lock cooldown expired, attempting to regain control", policy.policy_id);
+                    policy.force_reapply();
+                }
+                continue;
+            }
             let pmin = *policy.available_freqs.first().unwrap() as f32;
             let pmax = *policy.available_freqs.last().unwrap() as f32;
             let target_val = pmin + ratio * (pmax - pmin);
@@ -576,7 +547,6 @@ impl FasController {
                 };
                 if apply { policy.apply_freq_safe(target_freq); }
             } else if force_this_cycle {
-                // 即使目标没变也定期重写，纠正被外部偷改的频率
                 policy.force_reapply();
             }
         }
@@ -585,7 +555,7 @@ impl FasController {
     pub fn update_frame(&mut self, frame_delta_ns: u64) {
         if frame_delta_ns == 0 || self.policies.is_empty() { return; }
 
-        // 冷启动 3.5 秒内保持高 perf 应对 Shader 编译
+        // 冷启动保护（Shader 编译）
         if self.init_time.elapsed().as_millis() < 3500 {
             if self.perf_index < 850.0 {
                 self.perf_index = 850.0;
@@ -597,9 +567,7 @@ impl FasController {
         self.frame_time_accumulator_ns = self.frame_time_accumulator_ns.wrapping_add(frame_delta_ns);
 
         let budget_ns = (1_000_000_000.0 / self.current_target_fps.max(1.0)) as u64;
-        // min_ns 基于最高档帧率，保证低档位也能看到快帧（避免升档自锁）
         let min_ns = self.max_gear_min_ns();
-        // max_ns 固定 500ms，消除高帧率下 heavy 检测盲区
         let max_ns = (FIXED_MAX_FRAME_MS * 1_000_000.0) as u64;
         let actual_ms = frame_delta_ns as f32 / 1_000_000.0;
         let budget_ms = budget_ns as f32 / 1_000_000.0;
@@ -607,7 +575,7 @@ impl FasController {
 
         if frame_delta_ns < min_ns { return; }
 
-        // ── 应用切换/息屏检测（frame_delta > 3s 必为非渲染事件）──
+        // ── 应用切换/息屏检测 ──
         if actual_ms > APP_SWITCH_GAP_MS {
             let was_loading = self.is_in_loading_state;
             let was_soft = self.is_in_soft_loading;
@@ -618,10 +586,11 @@ impl FasController {
             self.soft_loading_frames_in_state = 0;
             self.soft_loading_probe_countdown = 0;
             self.scene_transition_guard = 0;
+            self.scene_transition_continuous = 0;
+            self.scene_transition_low_fps_frames = 0;
             self.jank_cooldown = 0;
 
             if was_loading || was_soft {
-                // 之前在加载中，切回来大概率还在加载
                 self.is_in_loading_state = false;
                 self.consecutive_loading_frames = 0;
                 self.heavy_frame_streak_ms = 0.0;
@@ -640,7 +609,6 @@ impl FasController {
                     actual_ms, self.perf_index,
                     self.post_loading_ignore, self.loading_reentry_cooldown);
             } else {
-                // 正常游玩时的 app switch
                 self.is_in_loading_state = false;
                 self.consecutive_loading_frames = 0;
                 self.heavy_frame_streak_ms = 0.0;
@@ -667,7 +635,6 @@ impl FasController {
 
         // ── 重帧 & 硬加载状态机 ──
         if is_heavy {
-            // 重入冷却期：重帧交给 perf 提升处理，不触发 loading（防死循环）
             if self.loading_reentry_cooldown > 0 {
                 self.perf_index = (self.perf_index + 30.0).min(1000.0);
                 self.apply_freqs();
@@ -684,7 +651,6 @@ impl FasController {
             if !self.is_in_loading_state && self.heavy_frame_streak_ms > self.loading_cumulative_ms {
                 self.is_in_loading_state = true;
 
-                // 记录 loading 循环次数
                 let now = self.frame_time_accumulator_ns;
                 if self.loading_cycle_count == 0
                     || now.wrapping_sub(self.loading_cycle_first_ns) > SUSTAINED_LOADING_WINDOW_NS
@@ -703,7 +669,6 @@ impl FasController {
                         self.loading_cycle_count);
                 }
 
-                // 硬加载优先级高于软加载
                 if self.is_in_soft_loading {
                     self.is_in_soft_loading = false;
                     self.soft_loading_confirm = 0;
@@ -712,7 +677,6 @@ impl FasController {
                     self.soft_loading_probe_countdown = 0;
                 }
 
-                // 进入 loading：perf 钳位到 600-700（足够做解压，不过热）
                 let old = self.perf_index;
                 self.perf_index = self.perf_index.clamp(LOADING_PERF_FLOOR, LOADING_PERF_CEILING);
                 if old != self.perf_index {
@@ -726,7 +690,6 @@ impl FasController {
                 actual_ms, actual_ms / budget_ms, self.consecutive_loading_frames, self.heavy_frame_streak_ms);
             return;
         } else {
-            // 非重帧，使用容忍窗口而非立即打断
             if self.consecutive_loading_frames > 0 {
                 self.normal_frame_tolerance += 1;
                 if self.normal_frame_tolerance < LOADING_NORMAL_TOLERANCE {
@@ -742,7 +705,6 @@ impl FasController {
                 }
             }
 
-            // 退出硬加载状态
             if self.is_in_loading_state {
                 self.is_in_loading_state = false;
                 self.fps_window.clear();
@@ -796,19 +758,54 @@ impl FasController {
         if self.scene_transition_guard > 0 { self.scene_transition_guard -= 1; }
         if self.jank_cooldown > 0 { self.jank_cooldown -= 1; }
 
-        // ── 场景过渡检测（CV = stddev/mean，稳定时<0.1，过渡时>0.5）──
+        // ── 场景过渡检测 ──
         if self.fps_window.count() >= 20 {
             let cv = if avg_fps > 1.0 { self.fps_window.stddev() / avg_fps } else { 0.0 };
-            if cv > SCENE_TRANSITION_CV_THRESHOLD {
+            let fps_floor = self.current_target_fps * SCENE_TRANSITION_FPS_FLOOR_RATIO;
+
+            // CV高 + 帧率尚可 → 真实过渡；CV高 + 帧率极低 → 加载，不续命
+            if cv > SCENE_TRANSITION_CV_THRESHOLD && avg_fps > fps_floor {
                 if self.scene_transition_guard == 0 {
+                    self.scene_transition_continuous = 0;
+                    self.scene_transition_low_fps_frames = 0;
                     log::info!("FAS: ⚡ scene transition detected (CV={:.2}, avg={:.1}, std={:.1}) | guard {}",
                         cv, avg_fps, self.fps_window.stddev(), SCENE_TRANSITION_GUARD_FRAMES);
                 }
-                self.scene_transition_guard = SCENE_TRANSITION_GUARD_FRAMES;
+                self.scene_transition_continuous += 1;
+
+                if self.scene_transition_continuous < SCENE_TRANSITION_MAX_CONTINUOUS {
+                    self.scene_transition_guard = SCENE_TRANSITION_GUARD_FRAMES;
+                } else if self.scene_transition_guard == 1 {
+                    log::info!("FAS: ⚡ scene transition max duration reached ({}), force clearing",
+                        self.scene_transition_continuous);
+                    self.scene_transition_continuous = 0;
+                    self.scene_transition_low_fps_frames = 0;
+                }
+            }
+
+            // 连续低帧逃生：加载伪装成过渡时强制退出 guard
+            let recent = self.fps_window.recent_mean(15);
+            if self.scene_transition_guard > 0 && recent < fps_floor {
+                self.scene_transition_low_fps_frames += 1;
+                if self.scene_transition_low_fps_frames >= SCENE_TRANSITION_FORCE_EXIT_FRAMES {
+                    log::info!("FAS: ⚡ scene guard force-exit: sustained low fps ({:.1} < {:.0}) for {} frames",
+                        recent, fps_floor, self.scene_transition_low_fps_frames);
+                    self.scene_transition_guard = 0;
+                    self.scene_transition_continuous = 0;
+                    self.scene_transition_low_fps_frames = 0;
+                    self.jank_cooldown = 0;
+                }
+            } else if self.scene_transition_guard > 0 {
+                self.scene_transition_low_fps_frames = 0;
             }
         }
 
-        // 持续加载模式超时恢复
+        if self.scene_transition_guard == 0 && self.scene_transition_continuous > 0 {
+            self.scene_transition_continuous = 0;
+            self.scene_transition_low_fps_frames = 0;
+        }
+
+        // 持续加载超时恢复
         if self.sustained_loading && !self.is_in_loading_state {
             let now = self.frame_time_accumulator_ns;
             if now.wrapping_sub(self.loading_cycle_first_ns) > SUSTAINED_LOADING_WINDOW_NS * 2 {
@@ -819,11 +816,18 @@ impl FasController {
             }
         }
 
-        // ── 软加载检测（高 perf + 低 fps = 提频无效，瓶颈不在 CPU）──
+        // ── 软加载检测 ──
         let soft_loading_fps_threshold = self.current_target_fps * SOFT_LOADING_FPS_RATIO;
+        // 高方差时用 recent_mean 防窗口稀释
+        let effective_fps = if self.fps_window.count() >= 20 {
+            let cv = if avg_fps > 1.0 { self.fps_window.stddev() / avg_fps } else { 0.0 };
+            if cv > 0.3 { self.fps_window.recent_mean(20).min(avg_fps) } else { avg_fps }
+        } else {
+            avg_fps
+        };
 
         if !self.is_in_soft_loading {
-            if avg_fps < soft_loading_fps_threshold
+            if effective_fps < soft_loading_fps_threshold
                 && self.perf_index >= SOFT_LOADING_PERF_THRESHOLD
                 && self.fps_window.count() >= 15
             {
@@ -835,20 +839,22 @@ impl FasController {
                     self.soft_loading_probe_countdown = 0;
                     let old = self.perf_index;
                     self.perf_index = SOFT_LOADING_PERF_CAP;
+                    self.scene_transition_guard = 0;
+                    self.scene_transition_continuous = 0;
+                    self.scene_transition_low_fps_frames = 0;
+                    self.jank_cooldown = 0;
                     self.apply_freqs();
-                    log::info!("FAS: 🌀 enter soft loading | avg:{:.1} < {:.0}×{:.0}% \
+                    log::info!("FAS: 🌀 enter soft loading | eff_fps:{:.1} avg:{:.1} < {:.0}×{:.0}% \
                         & perf:{:.0}>={:.0} | Perf {:.0}→{:.0}",
-                        avg_fps, self.current_target_fps, SOFT_LOADING_FPS_RATIO * 100.0,
+                        effective_fps, avg_fps, self.current_target_fps, SOFT_LOADING_FPS_RATIO * 100.0,
                         old, SOFT_LOADING_PERF_THRESHOLD, old, self.perf_index);
                 }
             } else {
                 self.soft_loading_confirm = 0;
             }
         } else {
-            // ── 软加载状态中 ──
             self.soft_loading_frames_in_state += 1;
 
-            // ── probe：定期短暂放开频率限制，观察帧率是否响应（防死锁逃生）──
             let in_probe = self.soft_loading_probe_countdown > 0;
 
             if !in_probe {
@@ -870,7 +876,6 @@ impl FasController {
                 }
                 self.soft_loading_probe_countdown -= 1;
 
-                // probe 结束评估：用 recent_mean 而非 max_fps（抗单帧噪声）
                 if self.soft_loading_probe_countdown == 0 {
                     let probe_recent_avg = self.fps_window.recent_mean(SOFT_LOADING_PROBE_DURATION as usize);
                     let probe_recent_max = self.fps_window.recent_max(SOFT_LOADING_PROBE_DURATION as usize);
@@ -881,7 +886,6 @@ impl FasController {
                     };
 
                     if gain >= SOFT_LOADING_PROBE_FPS_GAIN_RATIO {
-                        // 帧率有明显提升 → 提频有效，退出软加载
                         self.is_in_soft_loading = false;
                         self.soft_loading_confirm = 0;
                         self.soft_loading_exit_confirm = 0;
@@ -895,7 +899,6 @@ impl FasController {
                             probe_recent_avg, probe_recent_max, self.soft_loading_probe_avg_before,
                             gain * 100.0, self.post_loading_downgrade_guard);
                     } else {
-                        // 帧率没响应 → 确实在加载，重新压制
                         self.perf_index = SOFT_LOADING_PERF_CAP;
                         self.apply_freqs();
                         log::info!("FAS: 🔬 soft loading probe end | recent_avg:{:.1} recent_max:{:.1} vs baseline:{:.1} gain:{:+.0}% | still loading, re-cap",
@@ -904,9 +907,7 @@ impl FasController {
                 }
             }
 
-            // ── 常规退出检测（与 probe 并行）──
             let is_avg_recovered = avg_fps >= self.current_target_fps * 0.7;
-            // 突破检测用 recent_mean 而非 max_fps（防偶发快帧假突破）
             let recent = self.fps_window.recent_mean(SOFT_LOADING_BREAKTHROUGH_WINDOW);
             let is_breakthrough = recent >= self.current_target_fps * SOFT_LOADING_BREAKTHROUGH_FPS_RATIO;
 
@@ -938,11 +939,10 @@ impl FasController {
                 self.soft_loading_exit_confirm = 0;
             }
 
-            // 软加载期间阻止降档
             self.downgrade_confirm_frames = 0;
         }
 
-        // ── 升档（用 recent_mean(30) 替代 max_fps，抗噪声防 ping-pong）──
+        // ── 升档 ──
         let recent30 = self.fps_window.recent_mean(30);
         if let Some(target) = next_gear {
             if self.upgrade_cooldown > 0 {
@@ -986,11 +986,9 @@ impl FasController {
             self.upgrade_confirm_frames = 0;
         }
 
-        // ── 降档（不削减 perf 避免瀑布式崩溃；场景过渡期间暂停）──
+        // ── 降档 ──
         if let Some(target) = prev_gear {
-            if self.is_in_soft_loading {
-                // 软加载期间已阻止降档
-            } else if self.post_loading_downgrade_guard > 0 {
+            if !self.is_in_soft_loading && self.post_loading_downgrade_guard > 0 {
                 self.downgrade_confirm_frames = 0;
                 log::debug!("FAS: downgrade blocked (post-loading guard: {})",
                     self.post_loading_downgrade_guard);
@@ -1005,7 +1003,6 @@ impl FasController {
                     self.current_target_fps = target;
                     self.downgrade_confirm_frames = 0;
                     self.ema_actual_ms = 0.0;
-                    // 不削减 perf_index，降档已降低目标，同 perf 更容易满足
                     self.fps_window.clear();
                     self.upgrade_cooldown = 150;
                     self.upgrade_confirm_frames = 0;
@@ -1025,8 +1022,7 @@ impl FasController {
         if self.ema_actual_ms <= 0.0 {
             self.ema_actual_ms = actual_ms;
         } else {
-            // EMA 不对称：坏帧(actual>ema) alpha=0.45 快速感知，好帧 alpha=0.12 缓慢放松
-            let a = if actual_ms > self.ema_actual_ms { 0.45 } else { 0.12 };
+            let a = if actual_ms > self.ema_actual_ms { 0.30 } else { 0.18 };
             self.ema_actual_ms = self.ema_actual_ms * (1.0 - a) + actual_ms * a;
         }
 
@@ -1034,31 +1030,43 @@ impl FasController {
         let inst_err = inst_budget - actual_ms;
         let act;
 
-        // ── 蹦床 v6 ──
+        // ── 蹦床 v7 ──
         let old_perf = self.perf_index;
         let damped = self.gear_change_dampen_frames > 0;
         let in_scene_transition = self.scene_transition_guard > 0;
 
+        // perf>800 时缩减增量，防满频时增量空转但副作用全额生效
+        let high_perf_scale = if self.perf_index > 800.0 {
+            ((1000.0 - self.perf_index) / 200.0).clamp(0.25, 1.0)
+        } else {
+            1.0
+        };
+
+        // 帧率自适应阈值（百分比而非绝对值）
+        let heavy_threshold = (ema_budget * 0.15).clamp(2.0, 4.0);
+        let bounce_threshold = (ema_budget * 0.15).clamp(1.0, 2.0);
+
         if inst_err < -self.instant_error_threshold_ms {
-            self.perf_index += if damped { 40.0 } else { 80.0 };
-            act = if damped { "crit-d(+40)" } else { "crit(+80)" };
+            let inc = (if damped { 40.0 } else { 80.0 }) * high_perf_scale;
+            self.perf_index += inc;
+            act = if damped { "crit-d" } else { "crit" };
             self.consecutive_normal_frames = 0;
             self.jank_cooldown = JANK_COOLDOWN_FRAMES_CRIT;
-        } else if ema_err < -2.0 {
-            self.perf_index += if damped { 15.0 } else { 40.0 };
-            act = if damped { "heavy-d(+15)" } else { "heavy(+40)" };
+        } else if ema_err < -heavy_threshold {
+            let inc = (if damped { 15.0 } else { 40.0 }) * high_perf_scale;
+            self.perf_index += inc;
+            act = if damped { "heavy-d" } else { "heavy" };
             self.consecutive_normal_frames = 0;
             self.jank_cooldown = self.jank_cooldown.max(JANK_COOLDOWN_FRAMES_HEAVY);
-        } else if ema_err < -0.5 {
-            self.perf_index += if damped { 3.0 } else { 5.0 };
-            act = if damped { "bounce-d(+3)" } else { "bounce(+5)" };
+        } else if ema_err < -bounce_threshold {
+            let inc = (if damped { 3.0 } else { 5.0 }) * high_perf_scale;
+            self.perf_index += inc;
+            act = if damped { "bounce-d" } else { "bounce" };
             self.consecutive_normal_frames = 0;
-            self.jank_cooldown = self.jank_cooldown.max(JANK_COOLDOWN_FRAMES_BOUNCE);
         } else {
             self.consecutive_normal_frames += 1;
 
             let in_jank_cooldown = self.jank_cooldown > 0;
-            // 低 perf 衰减减速（perf<400 时按比例缩减，防底部挣扎）
             let low_perf_factor = if self.perf_index < 400.0 {
                 (self.perf_index / 400.0).max(0.3)
             } else {
@@ -1066,40 +1074,44 @@ impl FasController {
             };
 
             if ema_err < 1.0 || in_jank_cooldown {
-                // 冷却期或微余量：fine 级别衰减
-                let base = if in_scene_transition { 1.5 } else { 3.0 };
+                let base = if in_jank_cooldown {
+                    if in_scene_transition { 3.0 } else { 5.0 }
+                } else {
+                    if in_scene_transition { 1.5 } else { 3.0 }
+                };
                 let d = base * low_perf_factor;
                 self.perf_index -= d;
                 act = if in_jank_cooldown {
                     "fine-jc"
                 } else if in_scene_transition {
-                    "fine-s(-1.5)"
+                    "fine-s"
                 } else {
-                    "fine(-3)"
+                    "fine"
                 };
             } else if ema_err < 3.0 && !in_jank_cooldown {
                 let base = if in_scene_transition { 3.0 } else { 8.0 };
                 let d = base * low_perf_factor;
                 self.perf_index -= d;
-                act = if in_scene_transition { "surplus-s(-3)" } else { "surplus(-8)" };
+                act = if in_scene_transition { "surplus-s" } else { "surplus" };
             } else if !in_jank_cooldown {
                 let base = if in_scene_transition { 5.0 } else { 15.0 };
                 let d = base * low_perf_factor;
                 self.perf_index -= d;
-                act = if in_scene_transition { "excess-s(-5)" } else { "excess(-15)" };
+                act = if in_scene_transition { "excess-s" } else { "excess" };
             } else {
-                // 理论不可达，编译安全保留
                 let d = 1.5 * low_perf_factor;
                 self.perf_index -= d;
                 act = "fine-jc";
             }
 
-            // fast decay：连续正常帧且 perf 高时快速降频（场景过渡和冷却期间禁止）
-            if self.consecutive_normal_frames >= 30 && self.perf_index > 600.0
+            // fast decay：连续正常帧 + 高 perf 时快速降频
+            if self.consecutive_normal_frames >= 30 && self.perf_index > 500.0
                 && !in_scene_transition && !in_jank_cooldown
             {
-                self.perf_index -= 80.0;
-                log::debug!("FAS: fast decay after {} frames", self.consecutive_normal_frames);
+                let step = ((self.perf_index - 400.0) / 600.0 * 80.0).clamp(15.0, 80.0);
+                self.perf_index -= step;
+                log::debug!("FAS: fast decay -{:.0} after {} frames (P:{:.0}→{:.0})",
+                    step, self.consecutive_normal_frames, self.perf_index + step, self.perf_index);
                 self.consecutive_normal_frames = 0;
             }
         }
@@ -1109,7 +1121,6 @@ impl FasController {
         if self.perf_index > old_perf + max_inc { self.perf_index = old_perf + max_inc; }
         if damped && self.perf_index > 900.0 { self.perf_index = 900.0; }
 
-        // 软加载期间再次压制 perf（probe 期间用更高上限）
         if self.is_in_soft_loading {
             let cap = if self.soft_loading_probe_countdown > 0 {
                 SOFT_LOADING_PROBE_PERF_CAP
@@ -1121,12 +1132,12 @@ impl FasController {
             }
         }
 
-        // ── 心跳（每30帧）：日志 + 频率 mismatch 检测 ──
+        // ── 心跳（每30帧） ──
         self.log_counter = self.log_counter.wrapping_add(1);
         if self.log_counter % 30 == 0 {
-            log::info!("FAS | {:.0}fps avg:{:.1} | {:.2}ms ema:{:.2} | err:{:+.2}/{:+.2} | {} | P:{:.0}{}{}{}{}{}{}",
+            log::info!("FAS | {:.0}fps avg:{:.1} | {:.2}ms ema:{:.2} | err:{:+.2}/{:+.2} thr:h{:.1}/b{:.1} | {} | P:{:.0}{}{}{}{}{}{}",
                 self.current_target_fps, avg_fps, actual_ms, self.ema_actual_ms,
-                ema_err, inst_err, act, self.perf_index,
+                ema_err, inst_err, heavy_threshold, bounce_threshold, act, self.perf_index,
                 if self.upgrade_cooldown > 0 { format!(" cd:{}", self.upgrade_cooldown) } else { String::new() },
                 if damped { format!(" damp:{}", self.gear_change_dampen_frames) } else { String::new() },
                 if self.post_loading_downgrade_guard > 0 { format!(" guard:{}", self.post_loading_downgrade_guard) } else { String::new() },
@@ -1134,28 +1145,42 @@ impl FasController {
                 if self.scene_transition_guard > 0 { format!(" [scene:{}]", self.scene_transition_guard) } else { String::new() },
                 if self.jank_cooldown > 0 { format!(" [jank-cd:{}]", self.jank_cooldown) } else { String::new() });
 
-            // 频率验证：检测 scaling_cur_freq 与设定值是否一致（5% 容忍度）
+            // 频率 mismatch 检测（5% 容忍度）
             let mut needs_reapply = false;
-            for p in &self.policies {
+            for p in self.policies.iter_mut() {
+                if p.external_lock_cooldown > 0 { continue; }
                 if let Ok(s) = fs::read_to_string(
                     format!("/sys/devices/system/cpu/cpufreq/policy{}/scaling_cur_freq", p.policy_id)) {
                     if let Ok(actual_freq) = s.trim().parse::<u32>() {
                         let diff = (actual_freq as i64 - p.current_freq as i64).unsigned_abs();
                         let threshold = (p.current_freq as u64) / 20;
                         if diff > threshold {
-                            log::warn!("FAS[P{}] freq mismatch: set={} actual={} MHz (diff {}%)",
-                                p.policy_id, p.current_freq / 1000, actual_freq / 1000,
-                                diff * 100 / p.current_freq as u64);
-                            needs_reapply = true;
+                            p.mismatch_count += 1;
+                            if p.mismatch_count >= MISMATCH_LOCK_THRESHOLD {
+                                p.external_lock_cooldown = 300; // ~5s 退避
+                                p.mismatch_count = 0;
+                                log::warn!("FAS[P{}] externally locked (thermal?): yielding control for 300 frames (actual={} MHz)",
+                                    p.policy_id, actual_freq / 1000);
+                            } else {
+                                log::warn!("FAS[P{}] freq mismatch: set={} actual={} MHz (diff {}%) [{}/{}]",
+                                    p.policy_id, p.current_freq / 1000, actual_freq / 1000,
+                                    diff * 100 / p.current_freq as u64,
+                                    p.mismatch_count, MISMATCH_LOCK_THRESHOLD);
+                                needs_reapply = true;
+                            }
+                        } else {
+                            p.mismatch_count = 0;
                         }
                     }
                 }
             }
 
             if needs_reapply {
-                log::info!("FAS: 🔧 freq mismatch detected, force reapplying all policies");
+                log::info!("FAS: 🔧 freq mismatch detected, force reapplying unlocked policies");
                 for p in self.policies.iter_mut() {
-                    p.force_reapply();
+                    if p.external_lock_cooldown == 0 {
+                        p.force_reapply();
+                    }
                 }
             }
         }
