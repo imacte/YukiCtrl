@@ -251,15 +251,35 @@ pub struct FunctionToggles {
     pub app_launch_boost: bool,
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct AppLaunchBoostSettings {
-    #[serde(default = "default_freq_multi")]
-    pub freq_multi: f32,
     #[serde(default = "default_boost_rate")]
     pub boost_rate_ms: u64,
+    #[serde(default = "default_boost_freq", deserialize_with = "de_util::deserialize_freq")]
+    pub small_core_boost_freq: u32,
+    #[serde(default = "default_boost_freq", deserialize_with = "de_util::deserialize_freq")]
+    pub medium_core_boost_freq: u32,
+    #[serde(default = "default_boost_freq", deserialize_with = "de_util::deserialize_freq")]
+    pub big_core_boost_freq: u32,
+    #[serde(default = "default_boost_freq", deserialize_with = "de_util::deserialize_freq")]
+    pub super_big_core_boost_freq: u32,
 }
-fn default_freq_multi() -> f32 { 1.2 }
+
+impl Default for AppLaunchBoostSettings {
+    fn default() -> Self {
+        Self {
+            boost_rate_ms: default_boost_rate(),
+            small_core_boost_freq: default_boost_freq(),
+            medium_core_boost_freq: default_boost_freq(),
+            big_core_boost_freq: default_boost_freq(),
+            super_big_core_boost_freq: default_boost_freq(),
+        }
+    }
+}
+
+/// 默认 boost 频率 = "max"，即内核允许的最高值
+fn default_boost_freq() -> u32 { 9999999 }
 fn default_boost_rate() -> u64 { 200 }
 
 #[derive(Debug, Deserialize, Default)]

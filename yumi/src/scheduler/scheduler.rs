@@ -295,53 +295,55 @@ impl CpuScheduler {
             // 2. 设置加速状态
             self.is_boosting.store(true, Ordering::SeqCst);
 
-            match self.get_current_mode() { 
-                Ok(current_mode_before_boost) => {
-                    let config_lock = self.config.read().unwrap();
-                    let boost_multiplier = config_lock.app_launch_boost_settings.freq_multi;
-                    
-                    // 3. 计算并应用加速频率
-                    let boosted_small_max = (current_mode_before_boost.freq.small_core_max_freq as f32 * boost_multiplier) as u32;
-                    let boosted_medium_max = (current_mode_before_boost.freq.medium_core_max_freq as f32 * boost_multiplier) as u32;
-                    let boosted_big_max = (current_mode_before_boost.freq.big_core_max_freq as f32 * boost_multiplier) as u32;
-                    let boosted_super_big_max = (current_mode_before_boost.freq.super_big_core_max_freq as f32 * boost_multiplier) as u32;
+            // 3. 从配置中直接读取独立的 boost 频率（与当前模式完全解耦）
+            let config_lock = self.config.read().unwrap();
+            let boost_settings = &config_lock.app_launch_boost_settings;
 
-                    if let Err(e) = self.set_max_cpu_freq_boost(boosted_small_max, boosted_medium_max, boosted_big_max, boosted_super_big_max) {
-                        log::error!("{}", t_with_args("boost-apply-failed", &fluent_args!("error" => e.to_string())));
-                    }
+            let boosted_small_max = boost_settings.small_core_boost_freq;
+            let boosted_medium_max = boost_settings.medium_core_boost_freq;
+            let boosted_big_max = boost_settings.big_core_boost_freq;
+            let boosted_super_big_max = boost_settings.super_big_core_boost_freq;
+            let boost_duration = boost_settings.boost_rate_ms;
+            drop(config_lock);
 
-                    // 4. 等待加速
-                    let boost_duration = config_lock.app_launch_boost_settings.boost_rate_ms;
-                    drop(config_lock); 
-                    
-                    std::thread::sleep(std::time::Duration::from_millis(boost_duration));
-                    log::info!("{}", t("boost-finished-restoring-settings"));
-                    
-                    // 5. 清除加速状态
-                    self.is_boosting.store(false, Ordering::SeqCst);
+            if let Err(e) = self.set_max_cpu_freq_boost(
+                boosted_small_max,
+                boosted_medium_max,
+                boosted_big_max,
+                boosted_super_big_max,
+            ) {
+                log::error!("{}", t_with_args("boost-apply-failed", &fluent_args!("error" => e.to_string())));
+            }
 
-                    // 6. 关键修改：获取当前的模式名称，并与加速前的进行对比
-                    let mode_name_after = self.current_mode_name.lock().unwrap().clone();
+            // 4. 等待加速持续时间
+            std::thread::sleep(std::time::Duration::from_millis(boost_duration));
+            log::info!("{}", t("boost-finished-restoring-settings"));
 
-                    if mode_name_before == mode_name_after {
-                        // 情况 A: 模式没有改变
-                        if let Err(e) = self.apply_frequencies(&current_mode_before_boost) {
+            // 5. 清除加速状态
+            self.is_boosting.store(false, Ordering::SeqCst);
+
+            // 6. 恢复：获取当前模式，并与加速前的进行对比
+            let mode_name_after = self.current_mode_name.lock().unwrap().clone();
+
+            if mode_name_before == mode_name_after {
+                // 情况 A: 模式没有改变，恢复到该模式的频率
+                match self.get_current_mode() {
+                    Ok(mode_to_restore) => {
+                        if let Err(e) = self.apply_frequencies(&mode_to_restore) {
                             log::error!("{}", t_with_args("boost-restore-freq-failed", &fluent_args!("error" => e.to_string())));
                         }
-                    } else {
-                        // 情况 B: 模式在加速期间发生了改变
-                        log::info!("{}", t_with_args("boost-mode-changed", &fluent_args!(
-                            "old" => mode_name_before.clone(), "new" => mode_name_after.as_str()
-                        )));
-                        if let Err(e) = self.apply_all_settings() {
-                            log::error!("{}", t_with_args("boost-mode-apply-failed", &fluent_args!("error" => e.to_string())));
-                        }
+                    }
+                    Err(e) => {
+                        log::error!("{}", t_with_args("boost-get-mode-failed", &fluent_args!("error" => e.to_string())));
                     }
                 }
-                Err(e) => {
-                    log::error!("{}", t_with_args("boost-get-mode-failed", &fluent_args!("error" => e.to_string())));
-                    self.is_boosting.store(false, Ordering::SeqCst);
-                    std::thread::sleep(std::time::Duration::from_secs(1));
+            } else {
+                // 情况 B: 模式在加速期间发生了改变，应用新模式的全部设置
+                log::info!("{}", t_with_args("boost-mode-changed", &fluent_args!(
+                    "old" => mode_name_before.clone(), "new" => mode_name_after.as_str()
+                )));
+                if let Err(e) = self.apply_all_settings() {
+                    log::error!("{}", t_with_args("boost-mode-apply-failed", &fluent_args!("error" => e.to_string())));
                 }
             }
         }

@@ -18,8 +18,11 @@ function:
 
 # App启动加速设置
 AppLaunchBoostSettings:
-  FreqMulti: 1.25
-  BoostRateMs: 600
+  BoostRateMs: 200
+  SmallCoreBoostFreq: “”
+  MediumCoreBoostFreq: “”
+  BigCoreBoostFreq: ""
+  SuperBigCoreBoostFreq: ""
 
 # 核心分配设置
 CoreAllocation:

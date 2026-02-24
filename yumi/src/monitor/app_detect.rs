@@ -253,17 +253,6 @@ pub fn app_detection_loop(
             Err(_) => (last_package.clone(), 0), 
         };
 
-        // ══════════════════════════════════════════════════════════════
-        // [FIX-FLOAT-3] 小窗/浮窗防抖
-        //
-        // 原问题：用户在 FAS 模式下点击小窗时，cgroup top-app 短暂切到
-        //   小窗应用。3 秒轮询刚好命中这个瞬间时，会发送一次"离开游戏"
-        //   + 一次"回到游戏"的 ModeChange，导致 FAS 状态被重置。
-        //
-        // 修复：当检测到包名变化时，等待 500ms 后重新检测。
-        //   如果包名又变回原来的，说明只是短暂的焦点切换（小窗操作），
-        //   直接忽略这次变化，不发送任何 ModeChange 事件。
-        // ══════════════════════════════════════════════════════════════
         let (current_package, current_pid) = if current_package != last_package 
             && !last_package.is_empty() 
             && !current_package.is_empty() 

@@ -235,7 +235,7 @@ pub fn start_scheduler_thread(rx: mpsc::Receiver<DaemonEvent>) -> Result<()> {
                             }
                         }
                     },
-                    crate::common::DaemonEvent::FrameUpdate { package_name, fps, frame_delta_ns } => {
+                    crate::common::DaemonEvent::FrameUpdate { package_name: _, fps: _, frame_delta_ns } => {
                         //log::debug!("App: {}, Instant FPS: {:.1}", package_name, fps);
                         let current_mode = mode_clone.lock().unwrap().clone();
                         if current_mode == "fas" {

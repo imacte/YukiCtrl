@@ -13,8 +13,11 @@ function:
   AdjIOScheduler: true
   AppLaunchBoost: true
 AppLaunchBoostSettings:
-  FreqMulti: 1.2
-  BoostRateMs: 1500
+  BoostRateMs: 200
+  SmallCoreBoostFreq: “”
+  MediumCoreBoostFreq: “”
+  BigCoreBoostFreq: ""
+  SuperBigCoreBoostFreq: ""
 CoreAllocation:
   CpuSetCore: 4-7
 CoreFramework:
