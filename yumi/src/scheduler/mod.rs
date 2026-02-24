@@ -190,22 +190,6 @@ pub fn start_scheduler_thread(rx: mpsc::Receiver<DaemonEvent>) -> Result<()> {
                                     log::info!("Entered FAS mode, FAS controller is now taking over CPU frequencies.");
                                 }
                             } else {
-                                // ==================== [FIX] FAS → 静态模式切换逻辑 ====================
-                                //
-                                // 原始 BUG：
-                                //   当 old_mode == "fas" 时，先设置 fas_suspended_at = Some(...)，
-                                //   然后紧接着检查 fas_suspended_at.is_some() → 必然为 true → continue，
-                                //   导致静态模式的 apply_all_settings() 永远不会被执行。
-                                //   同时 fas_suspended AtomicBool 卡在 true，导致 AppLaunchBoost 线程
-                                //   也被阻塞，不输出日志。
-                                //
-                                // 修复思路：
-                                //   将"FAS 刚被挂起"和"已处于挂起状态收到其他事件"两种情况分开处理。
-                                //   FAS 刚挂起时直接 continue（保护 sysfs 状态）；
-                                //   已处于挂起状态时也 continue（等待宽限期超时）；
-                                //   其他所有情况正常走静态调度。
-                                // ====================================================================
-
                                 if old_mode == "fas" && !fas_controller.policies.is_empty() {
                                     // 刚离开 FAS：挂起而非销毁，保护 sysfs 状态
                                     fas_suspended_at = Some(Instant::now());
