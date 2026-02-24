@@ -18,7 +18,7 @@ function:
 
 # App启动加速设置
 AppLaunchBoostSettings:
-  BoostRateMs: 200
+  BoostRateMs: 600
   SmallCoreBoostFreq: ""
   MediumCoreBoostFreq: ""
   BigCoreBoostFreq: ""
