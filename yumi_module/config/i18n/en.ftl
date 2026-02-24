@@ -26,13 +26,6 @@ power-db-write-failed = [Power] Failed to write power log to DB: { $error }
 power-read-failed = [Power] Failed to read voltage or current: { $error }
 power-status-read-failed = [Power] Failed to read charging status: { $error }
 
-# DB
-db-initialized = [DB] Database initialized at { $path }
-db-logged-raw = [DB] Logged raw data: { $vol }uV, { $cur }uA for { $pkg }
-db-session-limit-exceeded = [DB] Session count ({ $count }) exceeds limit ({ $limit }). Trimming { $trim } old session(s)...
-db-trimmed-entries = [DB] Trimmed { $rows } log entries from { $sessions } old session(s).
-db-session-limit-ok = [DB] Session count ({ $count }) is within limit ({ $limit }). No trim needed.
-
 # AppDetect
 app-detect-config-watch = [AppDetect] Started watching config file: { $path }
 app-detect-change-detected = [AppDetect] Change detected, debouncing for 100ms...

@@ -4,7 +4,7 @@ scheduler-module-started = 调度器模块已启动
 scheduler-module-start-failed = 启动调度器模块失败: { $error }
 monitor-module-crashed = 监控模块崩溃: { $error }
 monitor-module-started = 监控模块已启动
-monitor-starting = 正在启动 yumo-monitor 模块...
+monitor-starting = 正在启动 yumi-monitor 模块...
 
 # Boot
 boot-scripts-running = [Boot] 正在运行启动脚本...
@@ -25,13 +25,6 @@ power-new-session = [Power] 开始新会话: { $id }
 power-db-write-failed = [Power] 写入功耗日志到数据库失败: { $error }
 power-read-failed = [Power] 读取电压或电流失败: { $error }
 power-status-read-failed = [Power] 读取充电状态失败: { $error }
-
-# DB
-db-initialized = [DB] 数据库初始化于 { $path }
-db-logged-raw = [DB] 记录原始数据: { $vol }uV, { $cur }uA ({ $pkg })
-db-session-limit-exceeded = [DB] 会话数量 ({ $count }) 超过限制 ({ $limit })。正在清理 { $trim } 个旧会话...
-db-trimmed-entries = [DB] 已清理 { $rows } 条日志 (来自 { $sessions } 个旧会话)
-db-session-limit-ok = [DB] 会话数量 ({ $count }) 在限制内 ({ $limit })。无需清理
 
 # AppDetect
 app-detect-config-watch = [AppDetect] 开始监控配置文件: { $path }
