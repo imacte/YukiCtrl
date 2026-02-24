@@ -63,7 +63,12 @@ const getCoreTypeFromKey = (key: string): string | null => {
 
 const isFreqField = (path: string): boolean => {
   const parts = path.split('/');
-  return parts.includes('Freq') && getCoreTypeFromKey(parts[parts.length - 1] || '') !== null;
+  const key = parts[parts.length - 1] || '';
+  // Freq 分组下的核心频率字段
+  if (parts.includes('Freq') && getCoreTypeFromKey(key) !== null) return true;
+  // AppLaunchBoostSettings 下以 BoostFreq 结尾的核心字段
+  if (parts.includes('AppLaunchBoostSettings') && key.endsWith('BoostFreq') && getCoreTypeFromKey(key) !== null) return true;
+  return false;
 };
 
 const isGovField = (path: string): boolean => {
@@ -74,6 +79,11 @@ const isGovField = (path: string): boolean => {
 };
 
 const getPolicyForKey = (key: string): number => {
+  // global 不属于任何核心类型，取第一个有效的 policy 来获取可用调速器列表
+  if (key === 'global') {
+    const allPolicies = Object.keys(govsMap.value).map(Number);
+    return allPolicies.length > 0 ? allPolicies[0]! : -1;
+  }
   const coreType = getCoreTypeFromKey(key);
   if (!coreType) return -1;
   return corePathMap.value[coreType] ?? -1;

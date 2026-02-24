@@ -22,7 +22,7 @@ const mockRules = {
 const mockConfig = {
   meta: { name: "default_config", author: "yuki", language: "en", loglevel: "INFO" },
   function: { AffinitySetter: false, CpuIdleScalingGovernor: false, EasScheduler: false, cpuset: false, LoadBalancing: false, EnableFeas: false, AdjIOScheduler: false, AppLaunchBoost: false },
-  AppLaunchBoostSettings: { FreqMulti: 1.2, BoostRateMs: 200 , SmallCoreBoostFreq: "", MediumCoreBoostFreq: "", BigCoreBoostFreq: "", SuperBigCoreBoostFreq: "",},
+  AppLaunchBoostSettings: { BoostRateMs: 200, SmallCoreBoostFreq: "", MediumCoreBoostFreq: "", BigCoreBoostFreq: "", SuperBigCoreBoostFreq: "" },
   CoreAllocation: { CpuSetCore: "4-7" },
   CoreFramework: { SmallCorePath: 0, MediumCorePath: 4, BigCorePath: 7, SuperBigCorePath: -1 },
   IO_Settings: { Scheduler: "", IO_optimization: true },
