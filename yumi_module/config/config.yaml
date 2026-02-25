@@ -13,7 +13,7 @@ function:
   cpuset: false
   LoadBalancing: false
   EnableFeas: false
-  AdjIOScheduler: false
+  IOOptimization: true
   AppLaunchBoost: false
 
 # App启动加速设置
@@ -35,10 +35,12 @@ CoreFramework:
   BigCorePath: -1
   SuperBigCorePath: -1
 
-# IO 调度器设置
+# IO 设置（遍历 /sys/block/* 所有块设备）
 IO_Settings:
-  Scheduler: ""
-  IO_optimization: true
+  Scheduler: "none"
+  read_ahead_kb: "128"
+  nomerges: "2"
+  iostats: "0"
 
 # CFS 调度器参数
 CompletelyFairSchedulerValue:
@@ -57,12 +59,6 @@ Cpuset:
   restricted: "0-5"
   system_background: "1-2"
   background: "0-2"
-
-Bus_dcvs_Path:
-  CPUllccminPath: ""
-  CPUllccmaxPath: ""
-  CPUddrminPath: ""
-  CPUddrmaxPath: ""
 
 #调速器参数（path可加） 
 pGovPath:
@@ -105,12 +101,6 @@ powersave:
     UclampForeGroundMax: "70"
     UclampBackGroundMin: "0"
     UclampBackGroundMax: "50"
-  #总线频率
-  Bus_dcvs:
-    CPUllccmin: ""
-    CPUllccmax: ""
-    CPUddrmin: ""
-    CPUddrmax: ""
   #调速器参数值
   Govsets:
     schedutil:
@@ -161,12 +151,6 @@ balance:
     UclampForeGroundMax: "70"
     UclampBackGroundMin: "0"
     UclampBackGroundMax: "50"
-  #总线频率
-  Bus_dcvs:
-    CPUllccmin: ""
-    CPUllccmax: ""
-    CPUddrmin: ""
-    CPUddrmax: ""
   #调速器参数值
   Govsets:
     schedutil:
@@ -217,12 +201,6 @@ performance:
     UclampForeGroundMax: "80"
     UclampBackGroundMin: "0"
     UclampBackGroundMax: "50"
-  #总线频率
-  Bus_dcvs:
-    CPUllccmin: ""
-    CPUllccmax: ""
-    CPUddrmin: ""
-    CPUddrmax: ""
   #调速器参数值
   Govsets:
     schedutil:
@@ -273,12 +251,6 @@ fast:
     UclampForeGroundMax: "80"
     UclampBackGroundMin: "0"
     UclampBackGroundMax: "50"
-  #总线频率
-  Bus_dcvs:
-    CPUllccmin: ""
-    CPUllccmax: ""
-    CPUddrmin: ""
-    CPUddrmax: ""
   #调速器参数值
   Govsets:
     schedutil:

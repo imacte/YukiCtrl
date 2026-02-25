@@ -1,8 +1,11 @@
+# 元数据信息
 meta:
-  name: gs201
-  author: 你的颦儿
-  language: zh
-  loglevel: INFO
+  name: "gs201"
+  author: "你的颦儿"
+  language: "zh"
+  loglevel: "INFO"
+
+# 主要功能开关
 function:
   AffinitySetter: true
   CpuIdleScalingGovernor: true
@@ -10,172 +13,262 @@ function:
   cpuset: true
   LoadBalancing: true
   EnableFeas: true
-  AdjIOScheduler: true
+  IOOptimization: true
   AppLaunchBoost: true
+
+# App启动加速设置
 AppLaunchBoostSettings:
   BoostRateMs: 600
   SmallCoreBoostFreq: ""
   MediumCoreBoostFreq: ""
   BigCoreBoostFreq: ""
   SuperBigCoreBoostFreq: ""
+
+# 核心分配设置
 CoreAllocation:
-  CpuSetCore: 4-7
+  CpuSetCore: "4-7"
+
+# 核心框架路径
 CoreFramework:
   SmallCorePath: 0
   MediumCorePath: 4
   BigCorePath: 6
   SuperBigCorePath: -1
+
+# IO 设置（遍历 /sys/block/* 所有块设备）
 IO_Settings:
-  Scheduler: bfq
-  IO_optimization: true
+  Scheduler: "none"
+  read_ahead_kb: "128"
+  nomerges: "2"
+  iostats: "0"
+
+# CFS 调度器参数
 CompletelyFairSchedulerValue:
-  sched_child_runs_first: ''
-  sched_rt_period_us: ''
-  sched_rt_runtime_us: ''
+  sched_child_runs_first: ""
+  sched_rt_period_us: ""
+  sched_rt_runtime_us: ""
+
+# CPU 空闲设置
 CpuIdle:
-  current_governor: ''
+  current_governor: ""
+
+# Cpuset 分组
 Cpuset:
-  top_app: 0-7
-  foreground: 0-7
-  restricted: 0-5
-  system_background: 0-3
-  background: 0-3
-Bus_dcvs_Path:
-  CPUllccminPath: ''
-  CPUllccmaxPath: ''
-  CPUddrminPath: ''
-  CPUddrmaxPath: ''
-pGovPath: {
-  }
+  top_app: "0-7"
+  foreground: "0-7"
+  restricted: "0-5"
+  system_background: "0-3"
+  background: "0-3"
+
+#调速器参数（path可加） 
+pGovPath:
+  schedutil:
+    path1: ""
+    path2: ""
+    path3: ""
+  walt:
+    path1: ""
+    path2: ""
+    path3: ""
+
+# --- 性能模式 ---
+
+# 省电模式
 powersave:
+  # 调速器
   Governor:
-    global: sched_pixel
-    SmallCore: sched_pixel
-    MediumCore: sched_pixel
-    BigCore: sched_pixel
-    SuperBigCore: sched_pixel
+    global: "sched_pixel"
+    SmallCore: "sched_pixel"
+    MediumCore: "sched_pixel"
+    BigCore: "sched_pixel"
+    SuperBigCore: "sched_pixel"
+  # 频率
   Freq:
-    SmallCoreMinFreq: min
+    SmallCoreMinFreq: "min"
     SmallCoreMaxFreq: 1401000
-    MediumCoreMinFreq: min
+    MediumCoreMinFreq: "min"
     MediumCoreMaxFreq: 1999000
-    BigCoreMinFreq: min
+    BigCoreMinFreq: "min"
     BigCoreMaxFreq: 2252000
-    SuperBigCoreMinFreq: min
+    SuperBigCoreMinFreq: "min"
     SuperBigCoreMaxFreq: 1700000
+  # 频率限制
   Uclamp:
-    UclampTopAppMin: '0'
-    UclampTopAppMax: '100'
-    UclampTopApplatency_sensitive: '0'
-    UclampForeGroundMin: '0'
-    UclampForeGroundMax: '70'
-    UclampBackGroundMin: '0'
-    UclampBackGroundMax: '50'
-  Bus_dcvs:
-    CPUllccmin: ''
-    CPUllccmax: ''
-    CPUddrmin: ''
-    CPUddrmax: ''
-  Govsets: {
-    }
+    UclampTopAppMin: "0"
+    UclampTopAppMax: "100"
+    UclampTopApplatency_sensitive: "0"
+    UclampForeGroundMin: "0"
+    UclampForeGroundMax: "70"
+    UclampBackGroundMin: "0"
+    UclampBackGroundMax: "50"
+  #调速器参数值
+  Govsets:
+    sched_pixel:
+      path1: 
+        SmallCore: ""
+        MediumCore: ""
+        BigCore: ""
+        SuperBigCore: ""
+      path2: 
+        SmallCore: ""
+        MediumCore: ""
+        BigCore: ""
+        SuperBigCore: ""
+      path3: 
+        SmallCore: ""
+        MediumCore: ""
+        BigCore: ""
+        SuperBigCore: ""
+  # 其他设置
   Other:
     ufsClkGate: false
+
+# 均衡模式
 balance:
+  # 调速器
   Governor:
-    global: sched_pixel
-    SmallCore: sched_pixel
-    MediumCore: sched_pixel
-    BigCore: sched_pixel
-    SuperBigCore: sched_pixel
+    global: "sched_pixel"
+    SmallCore: "sched_pixel"
+    MediumCore: "sched_pixel"
+    BigCore: "sched_pixel"
+    SuperBigCore: "sched_pixel"
+  # 频率
   Freq:
-    SmallCoreMinFreq: min
+    SmallCoreMinFreq: "min"
     SmallCoreMaxFreq: 1598000
-    MediumCoreMinFreq: min
+    MediumCoreMinFreq: "min"
     MediumCoreMaxFreq: 2130000
-    BigCoreMinFreq: min
+    BigCoreMinFreq: "min"
     BigCoreMaxFreq: 2507000
-    SuperBigCoreMinFreq: min
+    SuperBigCoreMinFreq: "min"
     SuperBigCoreMaxFreq: 2300000
+  # 频率限制
   Uclamp:
-    UclampTopAppMin: '0'
-    UclampTopAppMax: '100'
-    UclampTopApplatency_sensitive: '0'
-    UclampForeGroundMin: '0'
-    UclampForeGroundMax: '70'
-    UclampBackGroundMin: '0'
-    UclampBackGroundMax: '50'
-  Bus_dcvs:
-    CPUllccmin: ''
-    CPUllccmax: ''
-    CPUddrmin: ''
-    CPUddrmax: ''
-  Govsets: {
-    }
+    UclampTopAppMin: "0"
+    UclampTopAppMax: "100"
+    UclampTopApplatency_sensitive: "0"
+    UclampForeGroundMin: "0"
+    UclampForeGroundMax: "70"
+    UclampBackGroundMin: "0"
+    UclampBackGroundMax: "50"
+  #调速器参数值
+  Govsets:
+    sched_pixel:
+      path1: 
+        SmallCore: ""
+        MediumCore: ""
+        BigCore: ""
+        SuperBigCore: ""
+      path2: 
+        SmallCore: ""
+        MediumCore: ""
+        BigCore: ""
+        SuperBigCore: ""
+      path3: 
+        SmallCore: ""
+        MediumCore: ""
+        BigCore: ""
+        SuperBigCore: ""
+  # 其他设置
   Other:
     ufsClkGate: false
+
+# 性能模式
 performance:
+  # 调速器
   Governor:
-    global: sched_pixel
-    SmallCore: sched_pixel
-    MediumCore: sched_pixel
-    BigCore: sched_pixel
-    SuperBigCore: sched_pixel
+    global: "sched_pixel"
+    SmallCore: "sched_pixel"
+    MediumCore: "sched_pixel"
+    BigCore: "sched_pixel"
+    SuperBigCore: "sched_pixel"
+  # 频率
   Freq:
-    SmallCoreMinFreq: min
+    SmallCoreMinFreq: "min"
     SmallCoreMaxFreq: 1704000
-    MediumCoreMinFreq: min
+    MediumCoreMinFreq: "min"
     MediumCoreMaxFreq: 2253000
-    BigCoreMinFreq: min
+    BigCoreMinFreq: "min"
     BigCoreMaxFreq: 2704000
-    SuperBigCoreMinFreq: min
+    SuperBigCoreMinFreq: "min"
     SuperBigCoreMaxFreq: 3000000
+  # 频率限制
   Uclamp:
-    UclampTopAppMin: '0'
-    UclampTopAppMax: '100'
-    UclampTopApplatency_sensitive: '1'
-    UclampForeGroundMin: '0'
-    UclampForeGroundMax: '80'
-    UclampBackGroundMin: '0'
-    UclampBackGroundMax: '50'
-  Bus_dcvs:
-    CPUllccmin: ''
-    CPUllccmax: ''
-    CPUddrmin: ''
-    CPUddrmax: ''
-  Govsets: {
-    }
+    UclampTopAppMin: "0"
+    UclampTopAppMax: "100"
+    UclampTopApplatency_sensitive: "1"
+    UclampForeGroundMin: "0"
+    UclampForeGroundMax: "80"
+    UclampBackGroundMin: "0"
+    UclampBackGroundMax: "50"
+  #调速器参数值
+  Govsets:
+    sched_pixel:
+      path1: 
+        SmallCore: ""
+        MediumCore: ""
+        BigCore: ""
+        SuperBigCore: ""
+      path2: 
+        SmallCore: ""
+        MediumCore: ""
+        BigCore: ""
+        SuperBigCore: ""
+      path3: 
+        SmallCore: ""
+        MediumCore: ""
+        BigCore: ""
+        SuperBigCore: ""
+  # 其他设置
   Other:
     ufsClkGate: true
+
+# 极速模式
 fast:
+  # 调速器
   Governor:
-    global: sched_pixel
-    SmallCore: sched_pixel
-    MediumCore: sched_pixel
-    BigCore: sched_pixel
-    SuperBigCore: sched_pixel
+    global: "sched_pixel"
+    SmallCore: "sched_pixel"
+    MediumCore: "sched_pixel"
+    BigCore: "sched_pixel"
+    SuperBigCore: "sched_pixel"
+  # 频率
   Freq:
-    SmallCoreMinFreq: min
-    SmallCoreMaxFreq: max
-    MediumCoreMinFreq: min
-    MediumCoreMaxFreq: max
-    BigCoreMinFreq: min
-    BigCoreMaxFreq: max
-    SuperBigCoreMinFreq: min
-    SuperBigCoreMaxFreq: max
+    SmallCoreMinFreq: "min"
+    SmallCoreMaxFreq: "max"
+    MediumCoreMinFreq: "min"
+    MediumCoreMaxFreq: "max"
+    BigCoreMinFreq: "min"
+    BigCoreMaxFreq: "max"
+    SuperBigCoreMinFreq: "min"
+    SuperBigCoreMaxFreq: "max"
+  # 频率限制
   Uclamp:
-    UclampTopAppMin: '10'
-    UclampTopAppMax: '100'
-    UclampTopApplatency_sensitive: '1'
-    UclampForeGroundMin: '0'
-    UclampForeGroundMax: '80'
-    UclampBackGroundMin: '0'
-    UclampBackGroundMax: '50'
-  Bus_dcvs:
-    CPUllccmin: ''
-    CPUllccmax: ''
-    CPUddrmin: ''
-    CPUddrmax: ''
-  Govsets: {
-    }
+    UclampTopAppMin: "10"
+    UclampTopAppMax: "100"
+    UclampTopApplatency_sensitive: "1"
+    UclampForeGroundMin: "0"
+    UclampForeGroundMax: "80"
+    UclampBackGroundMin: "0"
+    UclampBackGroundMax: "50"
+  #调速器参数值
+  Govsets:
+    sched_pixel:
+      path1: 
+        SmallCore: ""
+        MediumCore: ""
+        BigCore: ""
+        SuperBigCore: ""
+      path2: 
+        SmallCore: ""
+        MediumCore: ""
+        BigCore: ""
+        SuperBigCore: ""
+      path3: 
+        SmallCore: ""
+        MediumCore: ""
+        BigCore: ""
+        SuperBigCore: ""
+  # 其他设置
   Other:
     ufsClkGate: true

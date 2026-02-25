@@ -22,7 +22,6 @@ use std::fs;
 use std::os::unix::fs::DirBuilderExt;
 use std::process::Command;
 use std::sync::{Arc, Mutex, RwLock};
-use glob::glob;
 
 use crate::i18n::{t, t_with_args};
 use crate::fluent_args; 
@@ -90,7 +89,6 @@ impl CpuScheduler {
         self.apply_uclamp(&current_mode)?;
         self.apply_governor(&current_mode)?;
         self.apply_frequencies(&current_mode)?;
-        self.apply_bus_dcvs(&current_mode)?;
 
             // 正确地从 current_mode 中访问 `other`
         if self.sys_path_exist.hi6220_ufs_exist {
@@ -140,25 +138,6 @@ impl CpuScheduler {
         }
         if self.sys_path_exist.mtk_feas_exist {
             let _ = utils::try_write_file("/sys/module/mtk_fpsgo/parameters/perfmgr_enable", "0");
-        }
-        Ok(())
-    }
-
-    fn apply_bus_dcvs(&self, current_mode: &Mode) -> Result<()> {
-        let bus_paths = &self.config.read().unwrap().bus_dcvs_path;
-        let bus_config = &current_mode.bus_dcvs;
-
-        let settings_to_apply = [
-            (&bus_paths.cpullccmin_path, &bus_config.cpullccmin),
-            (&bus_paths.cpullccmax_path, &bus_config.cpullccmax),
-            (&bus_paths.cpuddrmin_path, &bus_config.cpuddrmin),
-            (&bus_paths.cpuddrmax_path, &bus_config.cpuddrmax),
-        ];
-
-        for (path, value) in settings_to_apply {
-            if !path.is_empty() && !value.is_empty() {
-                let _ = utils::try_write_file(path, value);
-            }
         }
         Ok(())
     }
@@ -440,25 +419,62 @@ impl CpuScheduler {
         Ok(())
     }
 
-    fn apply_glob_setting(pattern: &str, value: &str) {
-        // 使用 expect 在这里是可以接受的，因为模式是硬编码的，如果出错说明程序本身有问题
-        for entry in glob(pattern).expect("Failed to read glob pattern") {
-            if let Ok(path) = entry {
-                let _ = utils::try_write_file(&path, value);
-            }
-        }
-    }
-
     fn apply_io_settings(&self) -> Result<()> {
         let config = self.config.read().unwrap();
-        if config.function.adj_i_o_scheduler && !config.io_settings.scheduler.is_empty() {
-            let _ = utils::try_write_file("/sys/block/sda/queue/scheduler", &config.io_settings.scheduler);
+        if !config.function.io_optimization {
+            log::info!("{}", t("apply-io-settings-start"));
+            return Ok(());
         }
-        
-        if config.io_settings.io_optimization {
-            Self::apply_glob_setting("/sys/block/*/queue/iostats", "0");
-            Self::apply_glob_setting("/sys/block/*/queue/nomerges", "0");
+
+        let io = &config.io_settings;
+        let block_dir = std::path::Path::new("/sys/block");
+        if !block_dir.exists() {
+            log::warn!("IOOptimization: /sys/block does not exist, skipping");
+            log::info!("{}", t("apply-io-settings-start"));
+            return Ok(());
         }
+
+        if let Ok(entries) = fs::read_dir(block_dir) {
+            for entry in entries.flatten() {
+                let dev_path = entry.path();
+                let queue_path = dev_path.join("queue");
+                if !queue_path.exists() {
+                    continue;
+                }
+
+                // scheduler
+                if !io.scheduler.is_empty() {
+                    let p = queue_path.join("scheduler");
+                    if p.exists() {
+                        let _ = utils::try_write_file(&p, &io.scheduler);
+                    }
+                }
+                // read_ahead_kb
+                if !io.read_ahead_kb.is_empty() {
+                    let p = queue_path.join("read_ahead_kb");
+                    if p.exists() {
+                        let _ = utils::try_write_file(&p, &io.read_ahead_kb);
+                    }
+                }
+                // nomerges
+                if !io.nomerges.is_empty() {
+                    let p = queue_path.join("nomerges");
+                    if p.exists() {
+                        let _ = utils::try_write_file(&p, &io.nomerges);
+                    }
+                }
+                // iostats
+                if !io.iostats.is_empty() {
+                    let p = queue_path.join("iostats");
+                    if p.exists() {
+                        let _ = utils::try_write_file(&p, &io.iostats);
+                    }
+                }
+
+                log::debug!("IOOptimization: applied to {:?}", dev_path.file_name().unwrap_or_default());
+            }
+        }
+
         log::info!("{}", t("apply-io-settings-start"));
         Ok(())
     }

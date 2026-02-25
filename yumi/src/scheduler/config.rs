@@ -218,8 +218,6 @@ pub struct Config {
     pub cpu_idle: CpuIdle,
     #[serde(default, rename = "Cpuset")]
     pub cpu_set: Cpuset,
-    #[serde(default, rename = "Bus_dcvs_Path")]
-    pub bus_dcvs_path: BusDcvsPath,
     #[serde(default, rename = "pGovPath")]
     pub p_gov_path: HashMap<String, HashMap<String, String>>,
     #[serde(default)]
@@ -245,8 +243,8 @@ pub struct FunctionToggles {
     pub load_balancing: bool,
     #[serde(rename = "EnableFeas")]
     pub enable_feas: bool,
-    #[serde(rename = "AdjIOScheduler")]
-    pub adj_i_o_scheduler: bool,
+    #[serde(rename = "IOOptimization")]
+    pub io_optimization: bool,
     #[serde(rename = "AppLaunchBoost")]
     pub app_launch_boost: bool,
 }
@@ -297,13 +295,36 @@ pub struct CoreFramework {
     pub super_big_core_path: i32,
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct IOSettings {
-    #[serde(rename = "Scheduler")]
+    /// IO 调度器，遍历 /sys/block/* 写入（如 "none", "mq-deadline", "bfq"）
+    #[serde(default, rename = "Scheduler")]
     pub scheduler: String,
-    #[serde(rename = "IO_optimization")]
-    pub io_optimization: bool,
+    /// 预读大小 (KB)
+    #[serde(default = "default_read_ahead_kb")]
+    pub read_ahead_kb: String,
+    /// 合并请求策略 (0=允许合并, 1=仅简单合并, 2=禁止合并)
+    #[serde(default = "default_nomerges")]
+    pub nomerges: String,
+    /// IO 统计信息 (0=禁用, 1=启用)
+    #[serde(default = "default_iostats")]
+    pub iostats: String,
 }
+
+impl Default for IOSettings {
+    fn default() -> Self {
+        Self {
+            scheduler: String::new(),
+            read_ahead_kb: default_read_ahead_kb(),
+            nomerges: default_nomerges(),
+            iostats: default_iostats(),
+        }
+    }
+}
+
+fn default_read_ahead_kb() -> String { "128".to_string() }
+fn default_nomerges() -> String { "2".to_string() }
+fn default_iostats() -> String { "0".to_string() }
 
 #[derive(Debug, Deserialize, Default)]
 pub struct CompletelyFairSchedulerValue {
@@ -330,17 +351,7 @@ pub struct Cpuset {
   pub background: String,
 }
 
-#[derive(Debug, Deserialize, Default)]
-pub struct BusDcvsPath {
-  #[serde(rename = "CPUllccminPath")]
-  pub cpullccmin_path: String,
-  #[serde(rename = "CPUllccmaxPath")]
-  pub cpullccmax_path: String,
-  #[serde(rename = "CPUddrminPath")]
-  pub cpuddrmin_path: String,
-  #[serde(rename = "CPUddrmaxPath")]
-  pub cpuddrmax_path: String,
-}
+
 
 impl Config {
     pub fn from_file(path: &str) -> anyhow::Result<Self> {
