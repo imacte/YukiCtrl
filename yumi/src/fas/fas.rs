@@ -273,6 +273,7 @@ const DOWNGRADE_BOOST_PERF_INC: f32 = 150.0;       // 降档前提频尝试的 p
 const DOWNGRADE_BOOST_DURATION: u32 = 45;           // 提频尝试的持续帧数
 const DOWNGRADE_PROXIMITY_RATIO: f32 = 0.92;        // avg < target * 此比例时进入降频保护区
 const UPGRADE_COOLDOWN_AFTER_DOWNGRADE: u32 = 90;   // 降档后的升档冷却（原150，太长）
+const STABLE_FORGIVE_FRAMES: u32 = 900;              // 稳定运行约7.5s后宽恕振荡惩罚
 
 pub struct FasController {
     fps_gears: Vec<f32>,
@@ -324,6 +325,9 @@ pub struct FasController {
     downgrade_boost_active: bool,       // 降档前提频尝试是否激活
     downgrade_boost_remaining: u32,     // 提频尝试剩余帧数
     downgrade_boost_perf_saved: f32,    // 提频前保存的 perf_index
+    consecutive_downgrade_count: u32,   // 连续降档计数（防振荡）
+    last_downgrade_from_fps: f32,       // 上次降档前的目标档位
+    stable_gear_frames: u32,            // 当前档位连续稳定帧数（宽恕机制）
 }
 
 impl FasController {
@@ -378,6 +382,9 @@ impl FasController {
             downgrade_boost_active: false,
             downgrade_boost_remaining: 0,
             downgrade_boost_perf_saved: 0.0,
+            consecutive_downgrade_count: 0,
+            last_downgrade_from_fps: 0.0,
+            stable_gear_frames: 0,
         }
     }
 
@@ -505,6 +512,9 @@ impl FasController {
         self.downgrade_boost_active = false;
         self.downgrade_boost_remaining = 0;
         self.downgrade_boost_perf_saved = 0.0;
+        self.consecutive_downgrade_count = 0;
+        self.last_downgrade_from_fps = 0.0;
+        self.stable_gear_frames = 0;
 
         info!("FAS init | target:{:.0}fps margin:{:.1} clusters:{} perf:{:.0}",
             self.current_target_fps, self.fps_margin, self.policies.len(), self.perf_index);
@@ -983,20 +993,30 @@ impl FasController {
                     self.ema_actual_ms = 0.0;
                     self.fps_window.clear();
                     self.gear_change_dampen_frames = 90;
+                    // 正常升档成功，说明硬件确实能跑到，重置振荡计数
+                    self.consecutive_downgrade_count = 0;
+                    self.stable_gear_frames = 0;
                     // 升档后取消降档提频尝试状态
                     self.downgrade_boost_active = false;
                     self.downgrade_boost_remaining = 0;
                 }
             } else {
                 // 探测升档：放宽 perf 阈值 300→500，缩短确认 120→90
-                if avg_fps >= self.current_target_fps - 5.0
+                // 振荡防护：连续降档≥2次后，要求 avg 更接近目标档位才允许探测
+                let probe_avg_threshold = if self.consecutive_downgrade_count >= 2 {
+                    target - 10.0  // 严格：avg 需接近目标（如 134 for 144fps）
+                } else {
+                    self.current_target_fps - 5.0  // 默认：avg >= current - 5
+                };
+                if avg_fps >= probe_avg_threshold
                     && self.perf_index < 500.0
                     && self.upgrade_cooldown == 0
                 {
                     self.upgrade_confirm_frames += 1;
                     if self.upgrade_confirm_frames >= 90 {
-                        log::info!("FAS: 🔍 probe {:.0}→{:.0}fps (avg={:.1} perf={:.0})",
-                            self.current_target_fps, target, avg_fps, self.perf_index);
+                        log::info!("FAS: 🔍 probe {:.0}→{:.0}fps (avg={:.1} perf={:.0} consec:{})",
+                            self.current_target_fps, target, avg_fps, self.perf_index,
+                            self.consecutive_downgrade_count);
                         self.current_target_fps = target;
                         self.upgrade_confirm_frames = 0;
                         self.ema_actual_ms = 0.0;
@@ -1005,6 +1025,7 @@ impl FasController {
                         self.gear_change_dampen_frames = 90;
                         self.downgrade_boost_active = false;
                         self.downgrade_boost_remaining = 0;
+                        self.stable_gear_frames = 0;
                     }
                 } else {
                     // 不直接清零，而是快速扣减，给偶尔的波动一点点容错
@@ -1057,6 +1078,9 @@ impl FasController {
                         // 尝试结束，帧率仍不达标 → 恢复 perf 并开始计降档帧
                         self.perf_index = self.downgrade_boost_perf_saved;
                         self.downgrade_boost_active = false;
+                        // 关键修复：设为 1 使下一帧进入 else 分支累积降档帧，
+                        // 而不是因为 == 0 重新触发 boost 造成无限循环
+                        self.downgrade_confirm_frames = 1;
                         log::info!("FAS: ⬆ downgrade-boost failed | avg:{:.1} recent30:{:.1} still low | P restored→{:.0}",
                             avg_fps, recent30_for_dg, self.perf_index);
                     }
@@ -1071,11 +1095,22 @@ impl FasController {
                         self.downgrade_boost_remaining = 0;
                         self.ema_actual_ms = 0.0;
                         self.fps_window.clear();
-                        self.upgrade_cooldown = UPGRADE_COOLDOWN_AFTER_DOWNGRADE;
                         self.upgrade_confirm_frames = 0;
                         self.gear_change_dampen_frames = 60;
-                        log::info!("FAS: 💤 {:.0}→{:.0}fps (avg={:.1}) perf={:.0} cd={}",
-                            old_fps, target, avg_fps, self.perf_index, self.upgrade_cooldown);
+
+                        // 振荡防护：连续从同一档位降档时，指数增加升档冷却
+                        if (old_fps - self.last_downgrade_from_fps).abs() < 1.0 {
+                            self.consecutive_downgrade_count += 1;
+                        } else {
+                            self.consecutive_downgrade_count = 1;
+                        }
+                        self.last_downgrade_from_fps = old_fps;
+                        let backoff = 1u32 << self.consecutive_downgrade_count.min(4); // 2,4,8,16
+                        self.upgrade_cooldown = UPGRADE_COOLDOWN_AFTER_DOWNGRADE * backoff;
+                        log::info!("FAS: 💤 {:.0}→{:.0}fps (avg={:.1}) perf={:.0} cd={} [consec:{}]",
+                            old_fps, target, avg_fps, self.perf_index,
+                            self.upgrade_cooldown, self.consecutive_downgrade_count);
+                        self.stable_gear_frames = 0;
                     }
                 }
             } else {
@@ -1087,6 +1122,24 @@ impl FasController {
                     self.downgrade_boost_remaining = 0;
                 }
                 self.downgrade_confirm_frames = 0;
+            }
+        }
+
+        // ── 稳定运行宽恕机制 ──
+        // 在当前档位持续稳定运行足够久后，清零振荡惩罚（"无罪释放"）
+        if self.consecutive_downgrade_count > 0 {
+            if avg_fps >= self.current_target_fps - 3.0 && self.fps_window.count() >= 60 {
+                self.stable_gear_frames += 1;
+            } else {
+                // 帧率不达标时缓慢扣减（而非清零），容忍偶尔的小波动
+                self.stable_gear_frames = self.stable_gear_frames.saturating_sub(3);
+            }
+            if self.stable_gear_frames >= STABLE_FORGIVE_FRAMES {
+                log::info!("FAS: 🕊 stable forgive | {:.0}fps stable for {} frames, consec:{} → 0",
+                    self.current_target_fps, self.stable_gear_frames,
+                    self.consecutive_downgrade_count);
+                self.consecutive_downgrade_count = 0;
+                self.stable_gear_frames = 0;
             }
         }
 
