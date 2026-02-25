@@ -109,7 +109,7 @@ FAS 引擎维护一个 **perf_index**（性能指数，范围 0-1000），并根
 
 #### FAS 配置 (`rules.yaml`)
 
-FAS 的参数通过 `config/rules.yaml` 中的 `fas_rules` 节进行配置：
+FAS 的参数通过 `rules.yaml` 中的 `fas_rules` 节进行配置：
 
 ```yaml
 fas_rules:

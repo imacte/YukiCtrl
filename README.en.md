@@ -109,7 +109,7 @@ The FAS engine maintains a **perf_index** (performance index, range 0–1000) an
 
 #### FAS Configuration (`rules.yaml`)
 
-FAS parameters are configured in the `fas_rules` section of `config/rules.yaml`:
+FAS parameters are configured in the `fas_rules` section of `rules.yaml`:
 
 ```yaml
 fas_rules:
