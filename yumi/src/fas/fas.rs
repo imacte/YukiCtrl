@@ -357,6 +357,10 @@ pub struct FasController {
     // mismatch 频率补偿
     mismatch_compensation: f32,
     mismatch_consecutive_cycles: u32,
+    // probe 振荡防护
+    last_downgrade_perf: f32,
+    probe_fail_count: u32,
+    last_probe_gear: f32,
 }
 
 impl FasController {
@@ -422,6 +426,9 @@ impl FasController {
             soft_loading_matched_gear: 0.0,
             mismatch_compensation: 0.0,
             mismatch_consecutive_cycles: 0,
+            last_downgrade_perf: 0.0,
+            probe_fail_count: 0,
+            last_probe_gear: 0.0,
         }
     }
 
@@ -590,6 +597,9 @@ impl FasController {
         self.soft_loading_matched_gear = 0.0;
         self.mismatch_compensation = 0.0;
         self.mismatch_consecutive_cycles = 0;
+        self.last_downgrade_perf = 0.0;
+        self.probe_fail_count = 0;
+        self.last_probe_gear = 0.0;
 
         info!("FAS init | target:{:.0}fps margin:{:.1} clusters:{} perf:{:.0}",
             self.current_target_fps, self.fps_margin, self.policies.len(), self.perf_index);
@@ -680,6 +690,7 @@ impl FasController {
         self.upgrade_cooldown = UPGRADE_COOLDOWN_AFTER_DOWNGRADE;
         self.consecutive_downgrade_count = 1;
         self.last_downgrade_from_fps = old_fps;
+        self.last_downgrade_perf = 500.0; // 软加载降档不应阻止后续probe
         self.post_loading_downgrade_guard = 0;
         log::info!("FAS: 💤 soft-load downgrade {:.0}→{:.0}fps | P→{:.0}",
             old_fps, target_gear, self.perf_index);
@@ -730,6 +741,9 @@ impl FasController {
             self.post_jank_no_decay_frames = 0;
             self.mismatch_compensation = 0.0;
             self.mismatch_consecutive_cycles = 0;
+            self.last_downgrade_perf = 0.0;
+            self.probe_fail_count = 0;
+            self.last_probe_gear = 0.0;
 
             if was_loading || was_soft {
                 self.is_in_loading_state = false;
@@ -1185,23 +1199,30 @@ impl FasController {
                         self.stable_gear_frames = 0;
                         self.downgrade_boost_active = false;
                         self.downgrade_boost_remaining = 0;
+                        self.last_downgrade_perf = 0.0;
+                        self.probe_fail_count = 0;
+                        self.last_probe_gear = 0.0;
                     }
                 } else {
                     let probe_avg_threshold = if self.consecutive_downgrade_count >= 2 {
                         target - 10.0
                     } else {
-                        self.current_target_fps - 5.0
+                        target * 0.9
                     };
                     if avg_fps >= probe_avg_threshold
                         && self.perf_index < 500.0
                         && self.upgrade_cooldown == 0
+                        && self.last_downgrade_perf < 600.0
+                        && self.probe_fail_count < 3
                     {
                         self.upgrade_confirm_frames += 1;
                         if self.upgrade_confirm_frames >= 90 {
                             log::info!("FAS: 🔍 probe {:.0}→{:.0}fps (avg={:.1} P={:.0} \
-                                consec:{})",
+                                consec:{} dg_perf:{:.0} fails:{})",
                                 self.current_target_fps, target, avg_fps,
-                                self.perf_index, self.consecutive_downgrade_count);
+                                self.perf_index, self.consecutive_downgrade_count,
+                                self.last_downgrade_perf, self.probe_fail_count);
+                            self.last_probe_gear = target;
                             self.current_target_fps = target;
                             self.upgrade_confirm_frames = 0;
                             self.ema_actual_ms = 0.0;
@@ -1291,14 +1312,24 @@ impl FasController {
                                 self.consecutive_downgrade_count = 1;
                             }
                             self.last_downgrade_from_fps = old_fps;
+                            self.last_downgrade_perf = self.perf_index;
+
+                            // 追踪 probe 失败：如果从 probe 目标齿轮降档
+                            if (old_fps - self.last_probe_gear).abs() < 1.0 {
+                                self.probe_fail_count += 1;
+                            } else {
+                                self.probe_fail_count = 0;
+                            }
+
                             let backoff =
                                 1u32 << self.consecutive_downgrade_count.min(4);
                             self.upgrade_cooldown =
                                 UPGRADE_COOLDOWN_AFTER_DOWNGRADE * backoff;
                             log::info!("FAS: 💤 {:.0}→{:.0}fps (avg={:.1}) P={:.0} \
-                                cd={} [consec:{}]",
+                                cd={} [consec:{} dg_perf:{:.0} probe_fails:{}]",
                                 old_fps, target, avg_fps, self.perf_index,
-                                self.upgrade_cooldown, self.consecutive_downgrade_count);
+                                self.upgrade_cooldown, self.consecutive_downgrade_count,
+                                self.last_downgrade_perf, self.probe_fail_count);
                             self.stable_gear_frames = 0;
                         }
                     }
@@ -1323,10 +1354,12 @@ impl FasController {
                     self.stable_gear_frames = self.stable_gear_frames.saturating_sub(3);
                 }
                 if self.stable_gear_frames >= STABLE_FORGIVE_FRAMES {
-                    log::info!("FAS: 🕊 stable forgive | {:.0}fps for {}f, consec:{} → 0",
+                    let old_consec = self.consecutive_downgrade_count;
+                    self.consecutive_downgrade_count =
+                        self.consecutive_downgrade_count.saturating_sub(1);
+                    log::info!("FAS: 🕊 stable forgive | {:.0}fps for {}f, consec:{} → {}",
                         self.current_target_fps, self.stable_gear_frames,
-                        self.consecutive_downgrade_count);
-                    self.consecutive_downgrade_count = 0;
+                        old_consec, self.consecutive_downgrade_count);
                     self.stable_gear_frames = 0;
                 }
             }
@@ -1494,7 +1527,7 @@ impl FasController {
         self.log_counter = self.log_counter.wrapping_add(1);
         if self.log_counter % 30 == 0 {
             log::info!("FAS | {:.0}fps avg:{:.1} | {:.2}ms ema:{:.2} | \
-                err:{:+.2}/{:+.2} thr:h{:.1}/b{:.1} | {} | P:{:.0}{}{}{}{}{}{}{}{}",
+                err:{:+.2}/{:+.2} thr:h{:.1}/b{:.1} | {} | P:{:.0}{}{}{}{}{}{}{}{}{}",
                 self.current_target_fps, avg_fps, actual_ms, self.ema_actual_ms,
                 ema_err, inst_err, heavy_threshold, bounce_threshold,
                 act, self.perf_index,
@@ -1521,6 +1554,9 @@ impl FasController {
                 } else { String::new() },
                 if self.mismatch_compensation > 0.005 {
                     format!(" [mm-comp:{:.3}]", self.mismatch_compensation)
+                } else { String::new() },
+                if self.probe_fail_count > 0 {
+                    format!(" [pfail:{}]", self.probe_fail_count)
                 } else { String::new() });
 
             // ── 频率 mismatch 检测 & 补偿 ──
