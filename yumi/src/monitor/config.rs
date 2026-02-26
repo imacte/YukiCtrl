@@ -59,6 +59,8 @@ pub struct FasRulesConfig {
     perf_floor: f32,
     #[serde(default = "default_hysteresis")]
     freq_hysteresis: f32,
+    #[serde(default = "default_perf_ceil")]
+    perf_ceil: f32,
 }
 
 fn default_fps_gears() -> Vec<f32> { vec![30.0, 60.0, 90.0, 120.0, 144.0] }
@@ -71,6 +73,7 @@ fn default_post_loading_perf_max() -> f32 { 800.0 }
 fn default_instant_error_threshold() -> f32 { 4.0 }
 fn default_perf_floor() -> f32 { 150.0 }
 fn default_hysteresis() -> f32 { 0.015 }
+fn default_perf_ceil() -> f32 { 850.0 }
 
 
 impl Default for FasRulesConfig {
@@ -86,6 +89,7 @@ impl Default for FasRulesConfig {
             instant_error_threshold_ms: default_instant_error_threshold(),
             perf_floor: default_perf_floor(),
             freq_hysteresis: default_hysteresis(),
+            perf_ceil: default_perf_ceil(),
         }
     }
 }

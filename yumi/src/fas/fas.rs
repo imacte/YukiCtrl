@@ -19,6 +19,7 @@ use crate::scheduler::config::Config;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Write, Seek, SeekFrom};
 use std::path::Path;
+use std::sync::mpsc;
 use log::info;
 use serde::Deserialize;
 use std::time::Instant;
@@ -51,6 +52,8 @@ struct FasRules {
     perf_floor: f32,
     #[serde(default = "default_hysteresis")]
     freq_hysteresis: f32,
+    #[serde(default = "default_perf_ceil")]
+    perf_ceil: f32,
 }
 
 impl Default for FasRules {
@@ -66,6 +69,7 @@ impl Default for FasRules {
             instant_error_threshold_ms: default_instant_error_threshold(),
             perf_floor: default_perf_floor(),
             freq_hysteresis: default_hysteresis(),
+            perf_ceil: default_perf_ceil(),
         }
     }
 }
@@ -80,8 +84,9 @@ fn default_post_loading_perf_max() -> f32 { 800.0 }
 fn default_instant_error_threshold() -> f32 { 4.0 }
 fn default_perf_floor() -> f32 { 150.0 }
 fn default_hysteresis() -> f32 { 0.015 }
+fn default_perf_ceil() -> f32 { 850.0 }
 
-/// sysfs 频率写入器，带缓存和强制写入
+/// sysfs 频率写入器，带缓存
 pub struct FastWriter {
     file: Option<File>,
     last_value: Option<u32>,
@@ -112,13 +117,11 @@ impl FastWriter {
 
     fn do_write(&mut self, value: u32) {
         if let Some(file) = &mut self.file {
-            let mut buf = itoa::Buffer::new();
-            let val_str = buf.format(value);
+            let val_str = format!("{}\n", value);
             let _ = file.seek(SeekFrom::Start(0));
             if let Err(e) = file.write_all(val_str.as_bytes()) {
-                log::error!("FAS: failed to write freq {}: {}", val_str, e);
+                log::error!("FAS: failed to write freq {}: {}", value, e);
             }
-            let _ = file.set_len(val_str.len() as u64);
             self.last_value = Some(value);
         }
     }
@@ -132,12 +135,13 @@ pub struct PolicyController {
     pub current_freq: u32,
     pub policy_id: usize,
     pub mismatch_count: u32,
-    pub external_lock_cooldown: u32, // >0 时退避，每帧递减，到期试探恢复
+    pub external_lock_cooldown: u32,
 }
 
 impl PolicyController {
     pub fn apply_freq_safe(&mut self, target_freq: u32) {
-        let range = (*self.available_freqs.last().unwrap() - *self.available_freqs.first().unwrap()) as f32;
+        let range = (*self.available_freqs.last().unwrap()
+            - *self.available_freqs.first().unwrap()) as f32;
         let percentage = if range > 0.0 {
             ((target_freq - *self.available_freqs.first().unwrap()) as f32 / range * 100.0) as u32
         } else { 0 };
@@ -163,8 +167,8 @@ impl PolicyController {
     pub fn force_reapply(&mut self) {
         self.max_writer.invalidate();
         self.min_writer.invalidate();
-        self.max_writer.write_value_force(self.current_freq);
         self.min_writer.write_value_force(self.current_freq);
+        self.max_writer.write_value_force(self.current_freq);
     }
 }
 
@@ -243,6 +247,11 @@ const SOFT_LOADING_PROBE_INTERVAL: u32 = 120;
 const SOFT_LOADING_PROBE_DURATION: u32 = 15;
 const SOFT_LOADING_PROBE_PERF_CAP: f32 = 700.0;
 const SOFT_LOADING_PROBE_FPS_GAIN_RATIO: f32 = 0.3;
+const SOFT_LOADING_PROBE_FAIL_DECAY_STEP: f32 = 100.0;
+
+// 软加载内降档：连续稳定在某齿轮附近时直接降档
+const SOFT_LOADING_DOWNGRADE_CHECK_FRAMES: u32 = 45;
+const SOFT_LOADING_GEAR_MATCH_TOLERANCE: f32 = 8.0;
 
 const LOADING_PERF_FLOOR: f32 = 600.0;
 const LOADING_PERF_CEILING: f32 = 700.0;
@@ -255,25 +264,35 @@ const APP_SWITCH_IGNORE_FRAMES: u32 = 8;
 const FREQ_FORCE_REAPPLY_INTERVAL: u32 = 30;
 const FIXED_MAX_FRAME_MS: f32 = 500.0;
 
-const SCENE_TRANSITION_CV_THRESHOLD: f32 = 0.4;
-const SCENE_TRANSITION_GUARD_FRAMES: u32 = 60;
+const SCENE_TRANSITION_CV_THRESHOLD: f32 = 0.45;
+const SCENE_TRANSITION_GUARD_FRAMES: u32 = 40;
 
 const JANK_COOLDOWN_FRAMES_CRIT: u32 = 10;
 const JANK_COOLDOWN_FRAMES_HEAVY: u32 = 5;
 
-const SCENE_TRANSITION_MAX_CONTINUOUS: u32 = 180;    // 防无限续命硬上限
-const SCENE_TRANSITION_FPS_FLOOR_RATIO: f32 = 0.3;  // 低于此比例视为加载非过渡
-const SCENE_TRANSITION_FORCE_EXIT_FRAMES: u32 = 60;  // 连续低帧强制退出 guard
+const SCENE_TRANSITION_MAX_CONTINUOUS: u32 = 120;
+const SCENE_TRANSITION_FPS_FLOOR_RATIO: f32 = 0.3;
+const SCENE_TRANSITION_FORCE_EXIT_FRAMES: u32 = 15;
 
-const MISMATCH_LOCK_THRESHOLD: u32 = 3; // 连续 mismatch 触发退避
+const MISMATCH_LOCK_THRESHOLD: u32 = 8;
+const MISMATCH_REAPPLY_SKIP_CYCLES: u32 = 3;
 
-// ── 降档保护 ──
-const DOWNGRADE_CONFIRM_FRAMES: u32 = 90;          // 降档确认窗口（原30，太短）
-const DOWNGRADE_BOOST_PERF_INC: f32 = 150.0;       // 降档前提频尝试的 perf 增量
-const DOWNGRADE_BOOST_DURATION: u32 = 45;           // 提频尝试的持续帧数
-const DOWNGRADE_PROXIMITY_RATIO: f32 = 0.92;        // avg < target * 此比例时进入降频保护区
-const UPGRADE_COOLDOWN_AFTER_DOWNGRADE: u32 = 90;   // 降档后的升档冷却（原150，太长）
-const STABLE_FORGIVE_FRAMES: u32 = 900;              // 稳定运行约7.5s后宽恕振荡惩罚
+const DOWNGRADE_CONFIRM_FRAMES: u32 = 90;
+const DOWNGRADE_BOOST_PERF_INC: f32 = 150.0;
+const DOWNGRADE_BOOST_DURATION: u32 = 45;
+const DOWNGRADE_PROXIMITY_RATIO: f32 = 0.92;
+const UPGRADE_COOLDOWN_AFTER_DOWNGRADE: u32 = 90;
+const STABLE_FORGIVE_FRAMES: u32 = 900;
+
+const FAST_DECAY_FRAME_THRESHOLD: u32 = 60;
+const FAST_DECAY_PERF_THRESHOLD: f32 = 650.0;
+const FAST_DECAY_MAX_STEP: f32 = 30.0;
+const FAST_DECAY_MIN_STEP: f32 = 5.0;
+const FAST_DECAY_POST_JANK_SUPPRESS: u32 = 90;
+
+// deficit 抑制阈值：EMA误差浅于此值时不增P，改为微衰减
+const DEFICIT_SUPPRESS_MS: f32 = 0.3;
+
 
 pub struct FasController {
     fps_gears: Vec<f32>,
@@ -315,6 +334,7 @@ pub struct FasController {
     instant_error_threshold_ms: f32,
     perf_floor: f32,
     freq_hysteresis: f32,
+    perf_ceil: f32,
     frame_time_accumulator_ns: u64,
     init_time: Instant,
     freq_force_counter: u32,
@@ -322,12 +342,18 @@ pub struct FasController {
     scene_transition_continuous: u32,
     scene_transition_low_fps_frames: u32,
     jank_cooldown: u32,
-    downgrade_boost_active: bool,       // 降档前提频尝试是否激活
-    downgrade_boost_remaining: u32,     // 提频尝试剩余帧数
-    downgrade_boost_perf_saved: f32,    // 提频前保存的 perf_index
-    consecutive_downgrade_count: u32,   // 连续降档计数（防振荡）
-    last_downgrade_from_fps: f32,       // 上次降档前的目标档位
-    stable_gear_frames: u32,            // 当前档位连续稳定帧数（宽恕机制）
+    downgrade_boost_active: bool,
+    downgrade_boost_remaining: u32,
+    downgrade_boost_perf_saved: f32,
+    consecutive_downgrade_count: u32,
+    last_downgrade_from_fps: f32,
+    stable_gear_frames: u32,
+    mismatch_result_rx: Option<mpsc::Receiver<Vec<(usize, u32)>>>,
+    post_jank_no_decay_frames: u32,
+    mismatch_probe_skip: u32,
+    // 软加载内齿轮匹配计数器
+    soft_loading_gear_match_frames: u32,
+    soft_loading_matched_gear: f32,
 }
 
 impl FasController {
@@ -372,6 +398,7 @@ impl FasController {
             instant_error_threshold_ms: default_instant_error_threshold(),
             perf_floor: default_perf_floor(),
             freq_hysteresis: default_hysteresis(),
+            perf_ceil: default_perf_ceil(),
             frame_time_accumulator_ns: 0,
             init_time: Instant::now(),
             freq_force_counter: 0,
@@ -385,6 +412,11 @@ impl FasController {
             consecutive_downgrade_count: 0,
             last_downgrade_from_fps: 0.0,
             stable_gear_frames: 0,
+            mismatch_result_rx: None,
+            post_jank_no_decay_frames: 0,
+            mismatch_probe_skip: 0,
+            soft_loading_gear_match_frames: 0,
+            soft_loading_matched_gear: 0.0,
         }
     }
 
@@ -394,10 +426,38 @@ impl FasController {
         max_gear_budget_ns * 50 / 100
     }
 
+    /// 查找最接近给定fps的低齿轮
+    fn find_nearest_lower_gear(&self, fps: f32) -> Option<f32> {
+        self.fps_gears.iter().copied()
+            .filter(|&g| g <= fps + SOFT_LOADING_GEAR_MATCH_TOLERANCE
+                      && g < self.current_target_fps - 0.5)
+            .reduce(f32::max)
+    }
+
+    /// 检测FPS是否稳定在某个齿轮附近
+    fn detect_native_gear(&self, avg_fps: f32) -> Option<f32> {
+        if self.fps_window.count() < 20 { return None; }
+        let stddev = self.fps_window.stddev();
+        // FPS波动小（stddev < 10%均值），说明是原生帧率而非加载
+        if avg_fps > 5.0 && stddev < avg_fps * 0.10 {
+            for &gear in self.fps_gears.iter().rev() {
+                if gear < self.current_target_fps - 0.5
+                    && (avg_fps - gear).abs() < SOFT_LOADING_GEAR_MATCH_TOLERANCE
+                {
+                    return Some(gear);
+                }
+            }
+        }
+        None
+    }
+
     pub fn load_policies(&mut self, config: &Config) {
         self.policies.clear();
-        let _ = crate::utils::try_write_file("/sys/module/perfmgr/parameters/perfmgr_enable", "0");
-        let _ = crate::utils::try_write_file("/sys/module/mtk_fpsgo/parameters/perfmgr_enable", "0");
+        self.mismatch_result_rx = None;
+        let _ = crate::utils::try_write_file(
+            "/sys/module/perfmgr/parameters/perfmgr_enable", "0");
+        let _ = crate::utils::try_write_file(
+            "/sys/module/mtk_fpsgo/parameters/perfmgr_enable", "0");
         log::debug!("FAS: disabled system FEAS/FPSGO");
 
         let root = crate::common::get_module_root();
@@ -419,6 +479,7 @@ impl FasController {
                 self.instant_error_threshold_ms = rules.fas_rules.instant_error_threshold_ms;
                 self.perf_floor = rules.fas_rules.perf_floor;
                 self.freq_hysteresis = rules.fas_rules.freq_hysteresis;
+                self.perf_ceil = rules.fas_rules.perf_ceil.max(self.perf_floor);
             }
         }
 
@@ -435,9 +496,12 @@ impl FasController {
 
         for (_idx, &policy_id) in clusters.iter().enumerate() {
             if policy_id != -1 {
-                let gov_path = format!("/sys/devices/system/cpu/cpufreq/policy{}/scaling_governor", policy_id);
+                let gov_path = format!(
+                    "/sys/devices/system/cpu/cpufreq/policy{}/scaling_governor", policy_id);
                 let _ = crate::utils::try_write_file(&gov_path, "performance");
-                let avail_path = format!("/sys/devices/system/cpu/cpufreq/policy{}/scaling_available_frequencies", policy_id);
+                let avail_path = format!(
+                    "/sys/devices/system/cpu/cpufreq/policy{}/scaling_available_frequencies",
+                    policy_id);
 
                 let mut avail_freqs: Vec<u32> = fs::read_to_string(&avail_path)
                     .unwrap_or_default()
@@ -452,10 +516,10 @@ impl FasController {
                 let min_f = *avail_freqs.first().unwrap();
                 let max_f = *avail_freqs.last().unwrap();
 
-                let mut max_writer = FastWriter::new(
-                    format!("/sys/devices/system/cpu/cpufreq/policy{}/scaling_max_freq", policy_id));
-                let mut min_writer = FastWriter::new(
-                    format!("/sys/devices/system/cpu/cpufreq/policy{}/scaling_min_freq", policy_id));
+                let mut max_writer = FastWriter::new(format!(
+                    "/sys/devices/system/cpu/cpufreq/policy{}/scaling_max_freq", policy_id));
+                let mut min_writer = FastWriter::new(format!(
+                    "/sys/devices/system/cpu/cpufreq/policy{}/scaling_min_freq", policy_id));
                 max_writer.write_value_force(max_f);
                 min_writer.write_value_force(max_f);
 
@@ -515,13 +579,19 @@ impl FasController {
         self.consecutive_downgrade_count = 0;
         self.last_downgrade_from_fps = 0.0;
         self.stable_gear_frames = 0;
+        self.post_jank_no_decay_frames = 0;
+        self.mismatch_probe_skip = 0;
+        self.soft_loading_gear_match_frames = 0;
+        self.soft_loading_matched_gear = 0.0;
 
         info!("FAS init | target:{:.0}fps margin:{:.1} clusters:{} perf:{:.0}",
             self.current_target_fps, self.fps_margin, self.policies.len(), self.perf_index);
-        info!("FAS config | heavy:{}ms loading:{}ms ignore:{} post_perf:{}-{} instant:{}ms floor:{} hyst:{}",
+        info!("FAS config | heavy:{}ms loading:{}ms ignore:{} post_perf:{}-{} \
+            instant:{}ms floor:{} hyst:{}",
             self.heavy_frame_threshold_ms, self.loading_cumulative_ms,
-            self.post_loading_ignore_frames, self.post_loading_perf_min, self.post_loading_perf_max,
-            self.instant_error_threshold_ms, self.perf_floor, self.freq_hysteresis);
+            self.post_loading_ignore_frames, self.post_loading_perf_min,
+            self.post_loading_perf_max, self.instant_error_threshold_ms,
+            self.perf_floor, self.freq_hysteresis);
         for p in &self.policies {
             info!("FAS[P{}] {}-{} MHz (init: {} MHz)", p.policy_id,
                 p.available_freqs.first().unwrap() / 1000,
@@ -541,11 +611,11 @@ impl FasController {
 
         let ratio = self.perf_index / 1000.0;
         for policy in self.policies.iter_mut() {
-            // 外部锁定退避：递减冷却，到期试探恢复
             if policy.external_lock_cooldown > 0 {
                 policy.external_lock_cooldown -= 1;
                 if policy.external_lock_cooldown == 0 {
-                    log::info!("FAS[P{}] lock cooldown expired, attempting to regain control", policy.policy_id);
+                    log::info!("FAS[P{}] lock cooldown expired, regaining control",
+                        policy.policy_id);
                     policy.force_reapply();
                 }
                 continue;
@@ -562,8 +632,10 @@ impl FasController {
                 .unwrap_or(pmax as u32);
 
             if target_freq != policy.current_freq {
-                let cur_idx = policy.available_freqs.iter().position(|&f| f == policy.current_freq);
-                let tgt_idx = policy.available_freqs.iter().position(|&f| f == target_freq);
+                let cur_idx = policy.available_freqs.iter()
+                    .position(|&f| f == policy.current_freq);
+                let tgt_idx = policy.available_freqs.iter()
+                    .position(|&f| f == target_freq);
                 let apply = match (cur_idx, tgt_idx) {
                     (Some(ci), Some(ti)) if (ci as i32 - ti as i32).abs() == 1 => {
                         let cur_r = (policy.current_freq as f32 - pmin) / (pmax - pmin);
@@ -578,10 +650,38 @@ impl FasController {
         }
     }
 
+    /// 执行软加载内的快速降档
+    fn perform_soft_loading_downgrade(&mut self, target_gear: f32) {
+        let old_fps = self.current_target_fps;
+        self.current_target_fps = target_gear;
+        self.is_in_soft_loading = false;
+        self.soft_loading_confirm = 0;
+        self.soft_loading_exit_confirm = 0;
+        self.soft_loading_frames_in_state = 0;
+        self.soft_loading_probe_countdown = 0;
+        self.soft_loading_gear_match_frames = 0;
+        self.soft_loading_matched_gear = 0.0;
+        self.fps_window.clear();
+        self.ema_actual_ms = 0.0;
+        self.downgrade_confirm_frames = 0;
+        self.upgrade_confirm_frames = 0;
+        self.downgrade_boost_active = false;
+        self.downgrade_boost_remaining = 0;
+        // 降档后给予适中的perf，不需要太高
+        self.perf_index = 500.0;
+        self.gear_change_dampen_frames = 60;
+        self.upgrade_cooldown = UPGRADE_COOLDOWN_AFTER_DOWNGRADE;
+        self.consecutive_downgrade_count = 1;
+        self.last_downgrade_from_fps = old_fps;
+        self.post_loading_downgrade_guard = 0;
+        log::info!("FAS: 💤 soft-load downgrade {:.0}→{:.0}fps | P→{:.0}",
+            old_fps, target_gear, self.perf_index);
+    }
+
     pub fn update_frame(&mut self, frame_delta_ns: u64) {
         if frame_delta_ns == 0 || self.policies.is_empty() { return; }
 
-        // 冷启动保护（Shader 编译）
+        // 冷启动保护
         if self.init_time.elapsed().as_millis() < 3500 {
             if self.perf_index < 850.0 {
                 self.perf_index = 850.0;
@@ -590,7 +690,8 @@ impl FasController {
             return;
         }
 
-        self.frame_time_accumulator_ns = self.frame_time_accumulator_ns.wrapping_add(frame_delta_ns);
+        self.frame_time_accumulator_ns =
+            self.frame_time_accumulator_ns.wrapping_add(frame_delta_ns);
 
         let budget_ns = (1_000_000_000.0 / self.current_target_fps.max(1.0)) as u64;
         let min_ns = self.max_gear_min_ns();
@@ -611,12 +712,15 @@ impl FasController {
             self.soft_loading_exit_confirm = 0;
             self.soft_loading_frames_in_state = 0;
             self.soft_loading_probe_countdown = 0;
+            self.soft_loading_gear_match_frames = 0;
+            self.soft_loading_matched_gear = 0.0;
             self.scene_transition_guard = 0;
             self.scene_transition_continuous = 0;
             self.scene_transition_low_fps_frames = 0;
             self.jank_cooldown = 0;
             self.downgrade_boost_active = false;
             self.downgrade_boost_remaining = 0;
+            self.post_jank_no_decay_frames = 0;
 
             if was_loading || was_soft {
                 self.is_in_loading_state = false;
@@ -632,7 +736,7 @@ impl FasController {
                 self.post_loading_downgrade_guard = POST_LOADING_DOWNGRADE_GUARD;
                 self.apply_freqs();
 
-                log::info!("FAS: 📱 app switch (resume loading) ({:.0}ms gap) | \
+                log::info!("FAS: 📱 app switch (resume loading) ({:.0}ms) | \
                     Perf→{:.0} | ignore {} | reentry_cd {}",
                     actual_ms, self.perf_index,
                     self.post_loading_ignore, self.loading_reentry_cooldown);
@@ -641,7 +745,6 @@ impl FasController {
                 self.consecutive_loading_frames = 0;
                 self.heavy_frame_streak_ms = 0.0;
                 self.normal_frame_tolerance = 0;
-
                 self.fps_window.clear();
                 self.ema_actual_ms = 0.0;
                 self.downgrade_confirm_frames = 0;
@@ -653,8 +756,7 @@ impl FasController {
                 self.loading_reentry_cooldown = LOADING_REENTRY_COOLDOWN;
                 self.apply_freqs();
 
-                log::info!("FAS: 📱 app switch detected ({:.0}ms gap) | \
-                    Perf→{:.0} | ignore {} | guard {}",
+                log::info!("FAS: 📱 app switch ({:.0}ms) | Perf→{:.0} | ignore {} | guard {}",
                     actual_ms, self.perf_index,
                     self.post_loading_ignore, self.post_loading_downgrade_guard);
             }
@@ -667,7 +769,7 @@ impl FasController {
                 self.perf_index = (self.perf_index + 30.0).min(1000.0);
                 self.apply_freqs();
                 self.loading_reentry_cooldown -= 1;
-                log::debug!("FAS: heavy {:.1}ms during reentry cooldown ({}), boost perf→{:.0}",
+                log::debug!("FAS: heavy {:.1}ms during reentry cooldown ({}), perf→{:.0}",
                     actual_ms, self.loading_reentry_cooldown, self.perf_index);
                 return;
             }
@@ -676,12 +778,15 @@ impl FasController {
             self.heavy_frame_streak_ms += actual_ms;
             self.normal_frame_tolerance = 0;
 
-            if !self.is_in_loading_state && self.heavy_frame_streak_ms > self.loading_cumulative_ms {
+            if !self.is_in_loading_state
+                && self.heavy_frame_streak_ms > self.loading_cumulative_ms
+            {
                 self.is_in_loading_state = true;
 
                 let now = self.frame_time_accumulator_ns;
                 if self.loading_cycle_count == 0
-                    || now.wrapping_sub(self.loading_cycle_first_ns) > SUSTAINED_LOADING_WINDOW_NS
+                    || now.wrapping_sub(self.loading_cycle_first_ns)
+                        > SUSTAINED_LOADING_WINDOW_NS
                 {
                     self.loading_cycle_count = 1;
                     self.loading_cycle_first_ns = now;
@@ -693,7 +798,7 @@ impl FasController {
                     && self.loading_cycle_count >= SUSTAINED_LOADING_CYCLE_THRESHOLD
                 {
                     self.sustained_loading = true;
-                    log::info!("FAS: 🔒 enter sustained loading ({}x cycles in window)",
+                    log::info!("FAS: 🔒 enter sustained loading ({}x cycles)",
                         self.loading_cycle_count);
                 }
 
@@ -703,29 +808,32 @@ impl FasController {
                     self.soft_loading_exit_confirm = 0;
                     self.soft_loading_frames_in_state = 0;
                     self.soft_loading_probe_countdown = 0;
+                    self.soft_loading_gear_match_frames = 0;
+                    self.soft_loading_matched_gear = 0.0;
                 }
 
                 let old = self.perf_index;
-                self.perf_index = self.perf_index.clamp(LOADING_PERF_FLOOR, LOADING_PERF_CEILING);
-                if old != self.perf_index {
-                    self.apply_freqs();
-                }
-                log::info!("FAS: 🔄 enter loading ({} frames, {:.0}ms) | Perf {:.0}→{:.0}{}",
-                    self.consecutive_loading_frames, self.heavy_frame_streak_ms, old, self.perf_index,
+                self.perf_index = self.perf_index
+                    .clamp(LOADING_PERF_FLOOR, LOADING_PERF_CEILING);
+                if old != self.perf_index { self.apply_freqs(); }
+                log::info!("FAS: 🔄 enter loading ({} frames, {:.0}ms) | P {:.0}→{:.0}{}",
+                    self.consecutive_loading_frames, self.heavy_frame_streak_ms,
+                    old, self.perf_index,
                     if self.sustained_loading { " [sustained]" } else { "" });
             }
             log::debug!("FAS: heavy {:.1}ms ({:.1}x) [streak:{}, {:.0}ms]",
-                actual_ms, actual_ms / budget_ms, self.consecutive_loading_frames, self.heavy_frame_streak_ms);
+                actual_ms, actual_ms / budget_ms,
+                self.consecutive_loading_frames, self.heavy_frame_streak_ms);
             return;
         } else {
             if self.consecutive_loading_frames > 0 {
                 self.normal_frame_tolerance += 1;
                 if self.normal_frame_tolerance < LOADING_NORMAL_TOLERANCE {
-                    log::debug!("FAS: loading tolerance {}/{} (non-heavy {:.1}ms in streak)",
+                    log::debug!("FAS: loading tolerance {}/{} ({:.1}ms)",
                         self.normal_frame_tolerance, LOADING_NORMAL_TOLERANCE, actual_ms);
                     return;
                 } else {
-                    log::debug!("FAS: burst end ({} frames, {:.0}ms, tolerance exhausted)",
+                    log::debug!("FAS: burst end ({} frames, {:.0}ms)",
                         self.consecutive_loading_frames, self.heavy_frame_streak_ms);
                     self.consecutive_loading_frames = 0;
                     self.heavy_frame_streak_ms = 0.0;
@@ -743,23 +851,27 @@ impl FasController {
                 let old = self.perf_index;
 
                 if self.sustained_loading {
-                    self.perf_index = self.perf_index.clamp(self.post_loading_perf_min, self.post_loading_perf_max);
+                    self.perf_index = self.perf_index
+                        .clamp(self.post_loading_perf_min, self.post_loading_perf_max);
                     self.post_loading_ignore = SUSTAINED_POST_LOADING_IGNORE;
                     self.gear_change_dampen_frames = 120;
                     self.post_loading_downgrade_guard = POST_LOADING_DOWNGRADE_GUARD + 60;
                     self.loading_reentry_cooldown = LOADING_REENTRY_COOLDOWN;
-                    log::info!("FAS: ✅ exit loading [sustained] | Perf {:.0}→{:.0} | ignore {} | guard {} | reentry_cd {}",
-                        old, self.perf_index, self.post_loading_ignore, self.post_loading_downgrade_guard,
-                        self.loading_reentry_cooldown);
+                    log::info!("FAS: ✅ exit loading [sustained] | P {:.0}→{:.0} | \
+                        ignore {} guard {} reentry_cd {}",
+                        old, self.perf_index, self.post_loading_ignore,
+                        self.post_loading_downgrade_guard, self.loading_reentry_cooldown);
                 } else {
-                    self.perf_index = self.perf_index.clamp(self.post_loading_perf_min, self.post_loading_perf_max);
+                    self.perf_index = self.perf_index
+                        .clamp(self.post_loading_perf_min, self.post_loading_perf_max);
                     self.post_loading_ignore = self.post_loading_ignore_frames;
                     self.gear_change_dampen_frames = 60;
                     self.post_loading_downgrade_guard = POST_LOADING_DOWNGRADE_GUARD;
                     self.loading_reentry_cooldown = LOADING_REENTRY_COOLDOWN;
-                    log::info!("FAS: ✅ exit loading | Perf {:.0}→{:.0} | ignore {} | guard {} | reentry_cd {}",
-                        old, self.perf_index, self.post_loading_ignore, self.post_loading_downgrade_guard,
-                        self.loading_reentry_cooldown);
+                    log::info!("FAS: ✅ exit loading | P {:.0}→{:.0} | \
+                        ignore {} guard {} reentry_cd {}",
+                        old, self.perf_index, self.post_loading_ignore,
+                        self.post_loading_downgrade_guard, self.loading_reentry_cooldown);
                 }
             }
         }
@@ -787,38 +899,49 @@ impl FasController {
         if self.loading_reentry_cooldown > 0 { self.loading_reentry_cooldown -= 1; }
         if self.scene_transition_guard > 0 { self.scene_transition_guard -= 1; }
         if self.jank_cooldown > 0 { self.jank_cooldown -= 1; }
+        if self.post_jank_no_decay_frames > 0 { self.post_jank_no_decay_frames -= 1; }
 
         // ── 场景过渡检测 ──
+        if self.scene_transition_guard > 0 && actual_ms > 200.0 {
+            log::info!("FAS: ⚡ scene guard cleared by extreme frame {:.0}ms", actual_ms);
+            self.scene_transition_guard = 0;
+            self.scene_transition_continuous = 0;
+            self.scene_transition_low_fps_frames = 0;
+            self.jank_cooldown = 0;
+        }
+
         if self.fps_window.count() >= 20 {
             let cv = if avg_fps > 1.0 { self.fps_window.stddev() / avg_fps } else { 0.0 };
             let fps_floor = self.current_target_fps * SCENE_TRANSITION_FPS_FLOOR_RATIO;
+            let recent5 = self.fps_window.recent_mean(5);
 
-            // CV高 + 帧率尚可 → 真实过渡；CV高 + 帧率极低 → 加载，不续命
-            if cv > SCENE_TRANSITION_CV_THRESHOLD && avg_fps > fps_floor {
+            if cv > SCENE_TRANSITION_CV_THRESHOLD
+                && avg_fps > fps_floor && recent5 > fps_floor
+            {
                 if self.scene_transition_guard == 0 {
                     self.scene_transition_continuous = 0;
                     self.scene_transition_low_fps_frames = 0;
-                    log::info!("FAS: ⚡ scene transition detected (CV={:.2}, avg={:.1}, std={:.1}) | guard {}",
-                        cv, avg_fps, self.fps_window.stddev(), SCENE_TRANSITION_GUARD_FRAMES);
+                    log::info!("FAS: ⚡ scene transition (CV={:.2} avg={:.1}) | guard {}",
+                        cv, avg_fps, SCENE_TRANSITION_GUARD_FRAMES);
                 }
                 self.scene_transition_continuous += 1;
 
                 if self.scene_transition_continuous < SCENE_TRANSITION_MAX_CONTINUOUS {
                     self.scene_transition_guard = SCENE_TRANSITION_GUARD_FRAMES;
                 } else if self.scene_transition_guard == 1 {
-                    log::info!("FAS: ⚡ scene transition max duration reached ({}), force clearing",
+                    log::info!("FAS: ⚡ scene transition max ({}), force clearing",
                         self.scene_transition_continuous);
                     self.scene_transition_continuous = 0;
                     self.scene_transition_low_fps_frames = 0;
                 }
             }
 
-            // 连续低帧逃生：加载伪装成过渡时强制退出 guard
+            // 连续低帧逃生
             let recent = self.fps_window.recent_mean(15);
             if self.scene_transition_guard > 0 && recent < fps_floor {
                 self.scene_transition_low_fps_frames += 1;
                 if self.scene_transition_low_fps_frames >= SCENE_TRANSITION_FORCE_EXIT_FRAMES {
-                    log::info!("FAS: ⚡ scene guard force-exit: sustained low fps ({:.1} < {:.0}) for {} frames",
+                    log::info!("FAS: ⚡ scene guard force-exit ({:.1} < {:.0} for {}f)",
                         recent, fps_floor, self.scene_transition_low_fps_frames);
                     self.scene_transition_guard = 0;
                     self.scene_transition_continuous = 0;
@@ -839,7 +962,7 @@ impl FasController {
         if self.sustained_loading && !self.is_in_loading_state {
             let now = self.frame_time_accumulator_ns;
             if now.wrapping_sub(self.loading_cycle_first_ns) > SUSTAINED_LOADING_WINDOW_NS * 2 {
-                log::info!("FAS: 🔓 sustained loading cleared (stable for >{}s)",
+                log::info!("FAS: 🔓 sustained loading cleared (stable >{}s)",
                     SUSTAINED_LOADING_WINDOW_NS * 2 / 1_000_000_000);
                 self.sustained_loading = false;
                 self.loading_cycle_count = 0;
@@ -848,7 +971,6 @@ impl FasController {
 
         // ── 软加载检测 ──
         let soft_loading_fps_threshold = self.current_target_fps * SOFT_LOADING_FPS_RATIO;
-        // 高方差时用 recent_mean 防窗口稀释
         let effective_fps = if self.fps_window.count() >= 20 {
             let cv = if avg_fps > 1.0 { self.fps_window.stddev() / avg_fps } else { 0.0 };
             if cv > 0.3 { self.fps_window.recent_mean(20).min(avg_fps) } else { avg_fps }
@@ -857,26 +979,45 @@ impl FasController {
         };
 
         if !self.is_in_soft_loading {
+            // 进入软加载前先检测是否为原生低帧率：直接降档而非进入软加载
             if effective_fps < soft_loading_fps_threshold
                 && self.perf_index >= SOFT_LOADING_PERF_THRESHOLD
                 && self.fps_window.count() >= 15
+                // 降档boost期间不进入软加载
+                && !self.downgrade_boost_active
             {
+                // 先检测是否是原生齿轮帧率
+                if let Some(native_gear) = self.detect_native_gear(avg_fps) {
+                    // FPS稳定在某齿轮附近，不是加载，直接降档
+                    log::info!("FAS: 🎯 native gear detected: avg={:.1} → gear {:.0}",
+                        avg_fps, native_gear);
+                    self.perform_soft_loading_downgrade(native_gear);
+                    self.apply_freqs();
+                    return;
+                }
+
                 self.soft_loading_confirm += 1;
                 if self.soft_loading_confirm >= SOFT_LOADING_CONFIRM_FRAMES {
                     self.is_in_soft_loading = true;
                     self.soft_loading_exit_confirm = 0;
                     self.soft_loading_frames_in_state = 0;
                     self.soft_loading_probe_countdown = 0;
+                    self.soft_loading_gear_match_frames = 0;
+                    self.soft_loading_matched_gear = 0.0;
                     let old = self.perf_index;
                     self.perf_index = SOFT_LOADING_PERF_CAP;
                     self.scene_transition_guard = 0;
                     self.scene_transition_continuous = 0;
                     self.scene_transition_low_fps_frames = 0;
                     self.jank_cooldown = 0;
+                    self.downgrade_boost_active = false;
+                    self.downgrade_boost_remaining = 0;
+                    self.downgrade_confirm_frames = 0;
                     self.apply_freqs();
-                    log::info!("FAS: 🌀 enter soft loading | eff_fps:{:.1} avg:{:.1} < {:.0}×{:.0}% \
-                        & perf:{:.0}>={:.0} | Perf {:.0}→{:.0}",
-                        effective_fps, avg_fps, self.current_target_fps, SOFT_LOADING_FPS_RATIO * 100.0,
+                    log::info!("FAS: 🌀 enter soft loading | eff:{:.1} avg:{:.1} < {:.0}×{:.0}% \
+                        & P:{:.0}>={:.0} | P {:.0}→{:.0}",
+                        effective_fps, avg_fps, self.current_target_fps,
+                        SOFT_LOADING_FPS_RATIO * 100.0,
                         old, SOFT_LOADING_PERF_THRESHOLD, old, self.perf_index);
                 }
             } else {
@@ -885,11 +1026,40 @@ impl FasController {
         } else {
             self.soft_loading_frames_in_state += 1;
 
+            // 软加载内齿轮匹配：如果FPS稳定在某齿轮附近，直接降档退出
+            if self.fps_window.count() >= 20 {
+                if let Some(matched_gear) = self.find_nearest_lower_gear(avg_fps) {
+                    let near = (avg_fps - matched_gear).abs() < SOFT_LOADING_GEAR_MATCH_TOLERANCE;
+                    let stable = self.fps_window.stddev() < avg_fps * 0.15;
+                    if near && stable {
+                        if (matched_gear - self.soft_loading_matched_gear).abs() < 1.0 {
+                            self.soft_loading_gear_match_frames += 1;
+                        } else {
+                            self.soft_loading_matched_gear = matched_gear;
+                            self.soft_loading_gear_match_frames = 1;
+                        }
+
+                        if self.soft_loading_gear_match_frames >= SOFT_LOADING_DOWNGRADE_CHECK_FRAMES {
+                            log::info!("FAS: 🎯 soft-load gear match: avg={:.1} → gear {:.0} ({}f)",
+                                avg_fps, matched_gear, self.soft_loading_gear_match_frames);
+                            self.perform_soft_loading_downgrade(matched_gear);
+                            self.apply_freqs();
+                            return;
+                        }
+                    } else {
+                        self.soft_loading_gear_match_frames = 0;
+                    }
+                } else {
+                    self.soft_loading_gear_match_frames = 0;
+                }
+            }
+
             let in_probe = self.soft_loading_probe_countdown > 0;
 
             if !in_probe {
                 if self.perf_index > SOFT_LOADING_PERF_CAP {
-                    self.perf_index = SOFT_LOADING_PERF_CAP;
+                    self.perf_index = (self.perf_index - SOFT_LOADING_PROBE_FAIL_DECAY_STEP)
+                        .max(SOFT_LOADING_PERF_CAP);
                 }
 
                 if self.soft_loading_frames_in_state % SOFT_LOADING_PROBE_INTERVAL == 0
@@ -897,7 +1067,7 @@ impl FasController {
                 {
                     self.soft_loading_probe_countdown = SOFT_LOADING_PROBE_DURATION;
                     self.soft_loading_probe_avg_before = avg_fps;
-                    log::info!("FAS: 🔬 soft loading probe start | baseline avg:{:.1} | lifting cap to {:.0}",
+                    log::info!("FAS: 🔬 soft probe start | baseline:{:.1} | cap→{:.0}",
                         avg_fps, SOFT_LOADING_PROBE_PERF_CAP);
                 }
             } else {
@@ -907,39 +1077,44 @@ impl FasController {
                 self.soft_loading_probe_countdown -= 1;
 
                 if self.soft_loading_probe_countdown == 0 {
-                    let probe_recent_avg = self.fps_window.recent_mean(SOFT_LOADING_PROBE_DURATION as usize);
-                    let probe_recent_max = self.fps_window.recent_max(SOFT_LOADING_PROBE_DURATION as usize);
+                    let probe_avg = self.fps_window
+                        .recent_mean(SOFT_LOADING_PROBE_DURATION as usize);
+                    let probe_max = self.fps_window
+                        .recent_max(SOFT_LOADING_PROBE_DURATION as usize);
                     let gain = if self.soft_loading_probe_avg_before > 0.1 {
-                        (probe_recent_avg - self.soft_loading_probe_avg_before) / self.soft_loading_probe_avg_before
-                    } else {
-                        0.0
-                    };
+                        (probe_avg - self.soft_loading_probe_avg_before)
+                            / self.soft_loading_probe_avg_before
+                    } else { 0.0 };
 
                     if gain >= SOFT_LOADING_PROBE_FPS_GAIN_RATIO {
                         self.is_in_soft_loading = false;
                         self.soft_loading_confirm = 0;
                         self.soft_loading_exit_confirm = 0;
                         self.soft_loading_frames_in_state = 0;
+                        self.soft_loading_gear_match_frames = 0;
+                        self.soft_loading_matched_gear = 0.0;
                         self.fps_window.clear();
                         self.downgrade_confirm_frames = 0;
                         self.ema_actual_ms = 0.0;
                         self.post_loading_downgrade_guard = POST_LOADING_DOWNGRADE_GUARD / 2;
                         self.gear_change_dampen_frames = 60;
-                        log::info!("FAS: ✅ exit soft loading [probe] | recent_avg:{:.1} recent_max:{:.1} vs baseline:{:.1} gain:{:+.0}% | guard {}",
-                            probe_recent_avg, probe_recent_max, self.soft_loading_probe_avg_before,
+                        log::info!("FAS: ✅ exit soft loading [probe] | avg:{:.1} max:{:.1} \
+                            vs baseline:{:.1} gain:{:+.0}% | guard {}",
+                            probe_avg, probe_max, self.soft_loading_probe_avg_before,
                             gain * 100.0, self.post_loading_downgrade_guard);
                     } else {
-                        self.perf_index = SOFT_LOADING_PERF_CAP;
-                        self.apply_freqs();
-                        log::info!("FAS: 🔬 soft loading probe end | recent_avg:{:.1} recent_max:{:.1} vs baseline:{:.1} gain:{:+.0}% | still loading, re-cap",
-                            probe_recent_avg, probe_recent_max, self.soft_loading_probe_avg_before, gain * 100.0);
+                        log::info!("FAS: 🔬 soft probe end | avg:{:.1} max:{:.1} \
+                            vs baseline:{:.1} gain:{:+.0}% | still loading",
+                            probe_avg, probe_max,
+                            self.soft_loading_probe_avg_before, gain * 100.0);
                     }
                 }
             }
 
             let is_avg_recovered = avg_fps >= self.current_target_fps * 0.7;
             let recent = self.fps_window.recent_mean(SOFT_LOADING_BREAKTHROUGH_WINDOW);
-            let is_breakthrough = recent >= self.current_target_fps * SOFT_LOADING_BREAKTHROUGH_FPS_RATIO;
+            let is_breakthrough =
+                recent >= self.current_target_fps * SOFT_LOADING_BREAKTHROUGH_FPS_RATIO;
 
             if is_avg_recovered || is_breakthrough {
                 self.soft_loading_exit_confirm += 1;
@@ -955,12 +1130,14 @@ impl FasController {
                     self.soft_loading_exit_confirm = 0;
                     self.soft_loading_frames_in_state = 0;
                     self.soft_loading_probe_countdown = 0;
+                    self.soft_loading_gear_match_frames = 0;
+                    self.soft_loading_matched_gear = 0.0;
                     self.fps_window.clear();
                     self.downgrade_confirm_frames = 0;
                     self.ema_actual_ms = 0.0;
                     self.post_loading_downgrade_guard = POST_LOADING_DOWNGRADE_GUARD / 2;
                     self.gear_change_dampen_frames = 60;
-                    log::info!("FAS: ✅ exit soft loading | avg:{:.1} recent15:{:.1} {} | guard {}",
+                    log::info!("FAS: ✅ exit soft loading | avg:{:.1} recent:{:.1} {} | guard {}",
                         avg_fps, recent,
                         if is_breakthrough { "[breakthrough]" } else { "[avg-recovered]" },
                         self.post_loading_downgrade_guard);
@@ -969,177 +1146,180 @@ impl FasController {
                 self.soft_loading_exit_confirm = 0;
             }
 
+            // 软加载期间禁止降档逻辑（但FIX-A的齿轮匹配降档在上面已处理）
             self.downgrade_confirm_frames = 0;
             self.downgrade_boost_active = false;
             self.downgrade_boost_remaining = 0;
         }
 
         // ── 升档 ──
-        let recent30 = self.fps_window.recent_mean(30);
-        if let Some(target) = next_gear {
-            if self.upgrade_cooldown > 0 {
-                self.upgrade_confirm_frames = 0;
-            } else if recent30 >= target - 10.0
-                && avg_fps >= self.current_target_fps * 0.9
-                && self.fps_window.count() >= 60
-            {
-                self.upgrade_confirm_frames += 1;
-                self.downgrade_confirm_frames = 0;
-                if self.upgrade_confirm_frames >= 60 {
-                    log::info!("FAS: 🚀 {:.0}→{:.0}fps (recent30={:.1} avg={:.1})",
-                        self.current_target_fps, target, recent30, avg_fps);
-                    self.current_target_fps = target;
+        if !self.is_in_soft_loading {
+            let recent30 = self.fps_window.recent_mean(30);
+            if let Some(target) = next_gear {
+                if self.upgrade_cooldown > 0 {
                     self.upgrade_confirm_frames = 0;
-                    self.ema_actual_ms = 0.0;
-                    self.fps_window.clear();
-                    self.gear_change_dampen_frames = 90;
-                    // 正常升档成功，说明硬件确实能跑到，重置振荡计数
-                    self.consecutive_downgrade_count = 0;
-                    self.stable_gear_frames = 0;
-                    // 升档后取消降档提频尝试状态
-                    self.downgrade_boost_active = false;
-                    self.downgrade_boost_remaining = 0;
-                }
-            } else {
-                // 探测升档：放宽 perf 阈值 300→500，缩短确认 120→90
-                // 振荡防护：连续降档≥2次后，要求 avg 更接近目标档位才允许探测
-                let probe_avg_threshold = if self.consecutive_downgrade_count >= 2 {
-                    target - 10.0  // 严格：avg 需接近目标（如 134 for 144fps）
-                } else {
-                    self.current_target_fps - 5.0  // 默认：avg >= current - 5
-                };
-                if avg_fps >= probe_avg_threshold
-                    && self.perf_index < 500.0
-                    && self.upgrade_cooldown == 0
+                } else if recent30 >= target - 10.0
+                    && avg_fps >= self.current_target_fps * 0.9
+                    && self.fps_window.count() >= 60
                 {
                     self.upgrade_confirm_frames += 1;
-                    if self.upgrade_confirm_frames >= 90 {
-                        log::info!("FAS: 🔍 probe {:.0}→{:.0}fps (avg={:.1} perf={:.0} consec:{})",
-                            self.current_target_fps, target, avg_fps, self.perf_index,
-                            self.consecutive_downgrade_count);
+                    self.downgrade_confirm_frames = 0;
+                    if self.upgrade_confirm_frames >= 60 {
+                        log::info!("FAS: 🚀 {:.0}→{:.0}fps (recent30={:.1} avg={:.1})",
+                            self.current_target_fps, target, recent30, avg_fps);
                         self.current_target_fps = target;
                         self.upgrade_confirm_frames = 0;
                         self.ema_actual_ms = 0.0;
                         self.fps_window.clear();
-                        self.perf_index = (self.perf_index + 200.0).min(600.0);
                         self.gear_change_dampen_frames = 90;
+                        self.consecutive_downgrade_count = 0;
+                        self.stable_gear_frames = 0;
                         self.downgrade_boost_active = false;
                         self.downgrade_boost_remaining = 0;
-                        self.stable_gear_frames = 0;
                     }
                 } else {
-                    // 不直接清零，而是快速扣减，给偶尔的波动一点点容错
-                    self.upgrade_confirm_frames = self.upgrade_confirm_frames.saturating_sub(5);
+                    let probe_avg_threshold = if self.consecutive_downgrade_count >= 2 {
+                        target - 10.0
+                    } else {
+                        self.current_target_fps - 5.0
+                    };
+                    if avg_fps >= probe_avg_threshold
+                        && self.perf_index < 500.0
+                        && self.upgrade_cooldown == 0
+                    {
+                        self.upgrade_confirm_frames += 1;
+                        if self.upgrade_confirm_frames >= 90 {
+                            log::info!("FAS: 🔍 probe {:.0}→{:.0}fps (avg={:.1} P={:.0} \
+                                consec:{})",
+                                self.current_target_fps, target, avg_fps,
+                                self.perf_index, self.consecutive_downgrade_count);
+                            self.current_target_fps = target;
+                            self.upgrade_confirm_frames = 0;
+                            self.ema_actual_ms = 0.0;
+                            self.fps_window.clear();
+                            self.perf_index = (self.perf_index + 200.0).min(600.0);
+                            self.gear_change_dampen_frames = 90;
+                            self.downgrade_boost_active = false;
+                            self.downgrade_boost_remaining = 0;
+                            self.stable_gear_frames = 0;
+                        }
+                    } else {
+                        self.upgrade_confirm_frames =
+                            self.upgrade_confirm_frames.saturating_sub(5);
+                    }
                 }
+            } else {
+                self.upgrade_confirm_frames = 0;
             }
-        } else {
-            self.upgrade_confirm_frames = 0;
-        }
 
-        // ── 降档 ──
-        let recent30_for_dg = self.fps_window.recent_mean(30);
-        if let Some(target) = prev_gear {
-            if !self.is_in_soft_loading && self.post_loading_downgrade_guard > 0 {
-                self.downgrade_confirm_frames = 0;
-                self.downgrade_boost_active = false;
-                self.downgrade_boost_remaining = 0;
-                log::debug!("FAS: downgrade blocked (post-loading guard: {})",
-                    self.post_loading_downgrade_guard);
-            } else if self.scene_transition_guard > 0 {
-                self.downgrade_confirm_frames = 0;
-                self.downgrade_boost_active = false;
-                self.downgrade_boost_remaining = 0;
-                log::debug!("FAS: downgrade blocked (scene transition guard: {})",
-                    self.scene_transition_guard);
-            } else if avg_fps < self.current_target_fps - 10.0 {
-                // 窗口滞后保护：avg 低但最近帧已恢复，说明只是窗口惯性，跳过降档
-                if recent30_for_dg >= self.current_target_fps - 5.0 {
+            // ── 降档 ──
+            let recent30_for_dg = self.fps_window.recent_mean(30);
+            if let Some(target) = prev_gear {
+                if self.post_loading_downgrade_guard > 0 {
+                    self.downgrade_confirm_frames = 0;
+                    self.downgrade_boost_active = false;
+                    self.downgrade_boost_remaining = 0;
+                    log::debug!("FAS: downgrade blocked (guard: {})",
+                        self.post_loading_downgrade_guard);
+                } else if self.scene_transition_guard > 0 {
+                    self.downgrade_confirm_frames = 0;
+                    self.downgrade_boost_active = false;
+                    self.downgrade_boost_remaining = 0;
+                    log::debug!("FAS: downgrade blocked (scene: {})",
+                        self.scene_transition_guard);
+                } else if avg_fps < self.current_target_fps - 10.0 {
+                    if recent30_for_dg >= self.current_target_fps - 5.0 {
+                        if self.downgrade_boost_active {
+                            log::info!("FAS: ⬆ boost cancelled (recent30:{:.1} healthy) | P:{:.0}",
+                                recent30_for_dg, self.perf_index);
+                            self.downgrade_boost_active = false;
+                            self.downgrade_boost_remaining = 0;
+                        }
+                        self.downgrade_confirm_frames = 0;
+                    } else if !self.downgrade_boost_active
+                        && self.downgrade_confirm_frames == 0
+                    {
+                        self.downgrade_boost_active = true;
+                        self.downgrade_boost_remaining = DOWNGRADE_BOOST_DURATION;
+                        self.downgrade_boost_perf_saved = self.perf_index;
+                        self.perf_index =
+                            (self.perf_index + DOWNGRADE_BOOST_PERF_INC).min(900.0);
+                        log::info!("FAS: ⬆ boost start | avg:{:.1} r30:{:.1} | P:{:.0}→{:.0}",
+                            avg_fps, recent30_for_dg,
+                            self.downgrade_boost_perf_saved, self.perf_index);
+                    } else if self.downgrade_boost_active
+                        && self.downgrade_boost_remaining > 0
+                    {
+                        self.downgrade_boost_remaining -= 1;
+                        if self.downgrade_boost_remaining == 0 {
+                            // boost失败：不恢复旧P，而是给予中等值
+                            // 因为更高的P也没用，恢复高P只会浪费功耗
+                            let restored_perf = self.downgrade_boost_perf_saved
+                                .min(self.perf_index);
+                            self.perf_index = restored_perf;
+                            self.downgrade_boost_active = false;
+                            self.downgrade_confirm_frames = 1;
+                            log::info!("FAS: ⬆ boost failed | avg:{:.1} r30:{:.1} | \
+                                P restored→{:.0}",
+                                avg_fps, recent30_for_dg, self.perf_index);
+                        }
+                    } else {
+                        self.downgrade_confirm_frames += 1;
+                        if self.downgrade_confirm_frames >= DOWNGRADE_CONFIRM_FRAMES {
+                            let old_fps = self.current_target_fps;
+                            self.current_target_fps = target;
+                            self.downgrade_confirm_frames = 0;
+                            self.downgrade_boost_active = false;
+                            self.downgrade_boost_remaining = 0;
+                            self.ema_actual_ms = 0.0;
+                            self.fps_window.clear();
+                            self.upgrade_confirm_frames = 0;
+                            self.gear_change_dampen_frames = 60;
+
+                            if (old_fps - self.last_downgrade_from_fps).abs() < 1.0 {
+                                self.consecutive_downgrade_count += 1;
+                            } else {
+                                self.consecutive_downgrade_count = 1;
+                            }
+                            self.last_downgrade_from_fps = old_fps;
+                            let backoff =
+                                1u32 << self.consecutive_downgrade_count.min(4);
+                            self.upgrade_cooldown =
+                                UPGRADE_COOLDOWN_AFTER_DOWNGRADE * backoff;
+                            log::info!("FAS: 💤 {:.0}→{:.0}fps (avg={:.1}) P={:.0} \
+                                cd={} [consec:{}]",
+                                old_fps, target, avg_fps, self.perf_index,
+                                self.upgrade_cooldown, self.consecutive_downgrade_count);
+                            self.stable_gear_frames = 0;
+                        }
+                    }
+                } else {
                     if self.downgrade_boost_active {
-                        log::info!("FAS: ⬆ downgrade-boost cancelled (recent30:{:.1} healthy) | P:{:.0}",
-                            recent30_for_dg, self.perf_index);
+                        log::info!("FAS: ⬆ boost succeeded | avg:{:.1} recovered | P:{:.0}",
+                            avg_fps, self.perf_index);
                         self.downgrade_boost_active = false;
                         self.downgrade_boost_remaining = 0;
                     }
                     self.downgrade_confirm_frames = 0;
-                // 降档前先尝试提频：给 PID 控制足够的频率余量来恢复帧率
-                } else if !self.downgrade_boost_active && self.downgrade_confirm_frames == 0 {
-                    // 首次进入降档区间，启动提频尝试
-                    self.downgrade_boost_active = true;
-                    self.downgrade_boost_remaining = DOWNGRADE_BOOST_DURATION;
-                    self.downgrade_boost_perf_saved = self.perf_index;
-                    self.perf_index = (self.perf_index + DOWNGRADE_BOOST_PERF_INC).min(900.0);
-                    log::info!("FAS: ⬆ downgrade-boost start | avg:{:.1} recent30:{:.1} | P:{:.0}→{:.0}",
-                        avg_fps, recent30_for_dg,
-                        self.downgrade_boost_perf_saved, self.perf_index);
-                } else if self.downgrade_boost_active && self.downgrade_boost_remaining > 0 {
-                    // 提频尝试进行中，维持高频不计入降档
-                    self.downgrade_boost_remaining -= 1;
-                    if self.downgrade_boost_remaining == 0 {
-                        // 尝试结束，帧率仍不达标 → 恢复 perf 并开始计降档帧
-                        self.perf_index = self.downgrade_boost_perf_saved;
-                        self.downgrade_boost_active = false;
-                        // 关键修复：设为 1 使下一帧进入 else 分支累积降档帧，
-                        // 而不是因为 == 0 重新触发 boost 造成无限循环
-                        self.downgrade_confirm_frames = 1;
-                        log::info!("FAS: ⬆ downgrade-boost failed | avg:{:.1} recent30:{:.1} still low | P restored→{:.0}",
-                            avg_fps, recent30_for_dg, self.perf_index);
-                    }
+                }
+            }
+
+            // ── 稳定运行宽恕 ──
+            if self.consecutive_downgrade_count > 0 {
+                if avg_fps >= self.current_target_fps - 3.0
+                    && self.fps_window.count() >= 60
+                {
+                    self.stable_gear_frames += 1;
                 } else {
-                    // 提频尝试已失败，正式累积降档确认帧
-                    self.downgrade_confirm_frames += 1;
-                    if self.downgrade_confirm_frames >= DOWNGRADE_CONFIRM_FRAMES {
-                        let old_fps = self.current_target_fps;
-                        self.current_target_fps = target;
-                        self.downgrade_confirm_frames = 0;
-                        self.downgrade_boost_active = false;
-                        self.downgrade_boost_remaining = 0;
-                        self.ema_actual_ms = 0.0;
-                        self.fps_window.clear();
-                        self.upgrade_confirm_frames = 0;
-                        self.gear_change_dampen_frames = 60;
-
-                        // 振荡防护：连续从同一档位降档时，指数增加升档冷却
-                        if (old_fps - self.last_downgrade_from_fps).abs() < 1.0 {
-                            self.consecutive_downgrade_count += 1;
-                        } else {
-                            self.consecutive_downgrade_count = 1;
-                        }
-                        self.last_downgrade_from_fps = old_fps;
-                        let backoff = 1u32 << self.consecutive_downgrade_count.min(4); // 2,4,8,16
-                        self.upgrade_cooldown = UPGRADE_COOLDOWN_AFTER_DOWNGRADE * backoff;
-                        log::info!("FAS: 💤 {:.0}→{:.0}fps (avg={:.1}) perf={:.0} cd={} [consec:{}]",
-                            old_fps, target, avg_fps, self.perf_index,
-                            self.upgrade_cooldown, self.consecutive_downgrade_count);
-                        self.stable_gear_frames = 0;
-                    }
+                    self.stable_gear_frames = self.stable_gear_frames.saturating_sub(3);
                 }
-            } else {
-                // 帧率恢复到安全区间，重置所有降档状态
-                if self.downgrade_boost_active {
-                    log::info!("FAS: ⬆ downgrade-boost succeeded | avg:{:.1} recovered | P:{:.0}",
-                        avg_fps, self.perf_index);
-                    self.downgrade_boost_active = false;
-                    self.downgrade_boost_remaining = 0;
+                if self.stable_gear_frames >= STABLE_FORGIVE_FRAMES {
+                    log::info!("FAS: 🕊 stable forgive | {:.0}fps for {}f, consec:{} → 0",
+                        self.current_target_fps, self.stable_gear_frames,
+                        self.consecutive_downgrade_count);
+                    self.consecutive_downgrade_count = 0;
+                    self.stable_gear_frames = 0;
                 }
-                self.downgrade_confirm_frames = 0;
-            }
-        }
-
-        // ── 稳定运行宽恕机制 ──
-        // 在当前档位持续稳定运行足够久后，清零振荡惩罚（"无罪释放"）
-        if self.consecutive_downgrade_count > 0 {
-            if avg_fps >= self.current_target_fps - 3.0 && self.fps_window.count() >= 60 {
-                self.stable_gear_frames += 1;
-            } else {
-                // 帧率不达标时缓慢扣减（而非清零），容忍偶尔的小波动
-                self.stable_gear_frames = self.stable_gear_frames.saturating_sub(3);
-            }
-            if self.stable_gear_frames >= STABLE_FORGIVE_FRAMES {
-                log::info!("FAS: 🕊 stable forgive | {:.0}fps stable for {} frames, consec:{} → 0",
-                    self.current_target_fps, self.stable_gear_frames,
-                    self.consecutive_downgrade_count);
-                self.consecutive_downgrade_count = 0;
-                self.stable_gear_frames = 0;
             }
         }
 
@@ -1147,10 +1327,19 @@ impl FasController {
         let ema_budget = 1000.0 / (self.current_target_fps - self.fps_margin).max(1.0);
         let inst_budget = 1000.0 / self.current_target_fps;
 
+        // EMA：缩小上下不对称差距 + jank后加速恢复
         if self.ema_actual_ms <= 0.0 {
             self.ema_actual_ms = actual_ms;
         } else {
-            let a = if actual_ms > self.ema_actual_ms { 0.30 } else { 0.18 };
+            // jank冷却结束后用更快的下降系数，避免幻影deficit
+            let a_down = if self.jank_cooldown == 0
+                && self.post_jank_no_decay_frames > 0
+            {
+                0.30  // jank刚过，加速EMA恢复
+            } else {
+                0.20
+            };
+            let a = if actual_ms > self.ema_actual_ms { 0.25 } else { a_down };
             self.ema_actual_ms = self.ema_actual_ms * (1.0 - a) + actual_ms * a;
         }
 
@@ -1158,34 +1347,34 @@ impl FasController {
         let inst_err = inst_budget - actual_ms;
         let act;
 
-        // ── 蹦床 v7 ──
+        // ── 蹦床 v9 ──
         let old_perf = self.perf_index;
         let damped = self.gear_change_dampen_frames > 0;
         let in_scene_transition = self.scene_transition_guard > 0;
 
-        // perf>800 时缩减增量，防满频时增量空转但副作用全额生效
-        let high_perf_scale = if self.perf_index > 800.0 {
-            ((1000.0 - self.perf_index) / 200.0).clamp(0.25, 1.0)
+        let high_perf_scale = if self.perf_index > 750.0 {
+            ((1000.0 - self.perf_index) / 250.0).clamp(0.2, 1.0)
         } else {
             1.0
         };
 
-        // 帧率自适应阈值（百分比而非绝对值）
         let heavy_threshold = (ema_budget * 0.15).clamp(2.0, 4.0);
         let bounce_threshold = (ema_budget * 0.15).clamp(1.0, 2.0);
 
         if inst_err < -self.instant_error_threshold_ms {
-            let inc = (if damped { 40.0 } else { 80.0 }) * high_perf_scale;
+            let inc = (if damped { 30.0 } else { 55.0 }) * high_perf_scale;
             self.perf_index += inc;
             act = if damped { "crit-d" } else { "crit" };
             self.consecutive_normal_frames = 0;
             self.jank_cooldown = JANK_COOLDOWN_FRAMES_CRIT;
+            self.post_jank_no_decay_frames = FAST_DECAY_POST_JANK_SUPPRESS;
         } else if ema_err < -heavy_threshold {
-            let inc = (if damped { 15.0 } else { 40.0 }) * high_perf_scale;
+            let inc = (if damped { 12.0 } else { 25.0 }) * high_perf_scale;
             self.perf_index += inc;
             act = if damped { "heavy-d" } else { "heavy" };
             self.consecutive_normal_frames = 0;
             self.jank_cooldown = self.jank_cooldown.max(JANK_COOLDOWN_FRAMES_HEAVY);
+            self.post_jank_no_decay_frames = FAST_DECAY_POST_JANK_SUPPRESS / 2;
         } else if ema_err < -bounce_threshold {
             let inc = (if damped { 3.0 } else { 5.0 }) * high_perf_scale;
             self.perf_index += inc;
@@ -1201,64 +1390,79 @@ impl FasController {
                 1.0
             };
 
-            // 近降档保护：avg_fps 接近 target - 10 边界时大幅减缓降频
             let proximity_threshold = self.current_target_fps * DOWNGRADE_PROXIMITY_RATIO;
             let near_downgrade = avg_fps < proximity_threshold && avg_fps > 1.0;
             let proximity_factor = if near_downgrade { 0.2 } else { 1.0 };
 
-            // 降档提频尝试期间不降频
-            let in_downgrade_boost = self.downgrade_boost_active && self.downgrade_boost_remaining > 0;
+            let in_downgrade_boost =
+                self.downgrade_boost_active && self.downgrade_boost_remaining > 0;
             let boost_factor = if in_downgrade_boost { 0.0 } else { 1.0 };
 
             let decay_scale = low_perf_factor * proximity_factor * boost_factor;
 
             if in_jank_cooldown {
-                // jank 冷却中：不论正负都缓慢回收，防止 jank 后过度追加
-                let base = if in_scene_transition { 3.0 } else { 5.0 };
+                let base = if in_scene_transition { 2.0 } else { 3.0 };
                 let d = base * decay_scale;
                 self.perf_index -= d;
                 act = "fine-jc";
-            } else if ema_err < 0.0 {
-                // 帧时间略超预算但未达 bounce：持平或微升，绝不扣 P
-                let inc = (-ema_err * 1.5).clamp(0.5, 2.0);
-                self.perf_index += inc;
+            } else if ema_err < -DEFICIT_SUPPRESS_MS {
+                // 显著deficit：需要瞬时也超预算才加P，防止EMA滞后导致的幻影deficit
+                if inst_err < 0.0 {
+                    let inc = (-ema_err * 1.2).clamp(0.3, 1.5);
+                    self.perf_index += inc;
+                }
                 act = if in_scene_transition { "deficit-s" } else { "deficit" };
+            } else if ema_err < 0.0 {
+                // 轻微deficit（-0.3~0）：不加P，但也仅微衰减，保持稳定
+                let base = if in_scene_transition { 0.5 } else { 1.0 };
+                let d = base * decay_scale;
+                self.perf_index -= d;
+                act = "near";
             } else if ema_err < 1.0 {
-                // 帧时间刚好达标或略有余裕：缓慢回收
-                let base = if in_scene_transition { 1.5 } else { 3.0 };
+                let base = if in_scene_transition { 1.5 } else { 2.5 };
                 let d = base * decay_scale;
                 self.perf_index -= d;
                 act = if in_scene_transition { "fine-s" } else { "fine" };
             } else if ema_err < 3.0 {
-                let base = if in_scene_transition { 3.0 } else { 6.0 };
+                let base = if in_scene_transition { 2.5 } else { 4.0 };
                 let d = base * decay_scale;
                 self.perf_index -= d;
                 act = if in_scene_transition { "surplus-s" } else { "surplus" };
             } else {
-                let base = if in_scene_transition { 5.0 } else { 10.0 };
+                let base = if in_scene_transition { 4.0 } else { 7.0 };
                 let d = base * decay_scale;
                 self.perf_index -= d;
                 act = if in_scene_transition { "excess-s" } else { "excess" };
             }
 
-            // fast decay：连续正常帧 + 高 perf 时快速降频
-            // 提高触发阈值 500→600，降低步长上限 80→50，近降档时跳过
-            if self.consecutive_normal_frames >= 30 && self.perf_index > 600.0
+            // fast_decay
+            let init_elapsed_ms = self.init_time.elapsed().as_millis();
+            if self.consecutive_normal_frames >= FAST_DECAY_FRAME_THRESHOLD
+                && self.perf_index > FAST_DECAY_PERF_THRESHOLD
                 && !in_scene_transition && !in_jank_cooldown
                 && !near_downgrade && !in_downgrade_boost
+                && self.post_jank_no_decay_frames == 0
+                && init_elapsed_ms > 8000
             {
-                let step = ((self.perf_index - 500.0) / 500.0 * 50.0).clamp(10.0, 50.0);
+                let step = ((self.perf_index - 500.0) / 500.0 * FAST_DECAY_MAX_STEP)
+                    .clamp(FAST_DECAY_MIN_STEP, FAST_DECAY_MAX_STEP);
                 self.perf_index -= step;
-                log::debug!("FAS: fast decay -{:.0} after {} frames (P:{:.0}→{:.0})",
-                    step, self.consecutive_normal_frames, self.perf_index + step, self.perf_index);
+                log::debug!("FAS: fast_decay -{:.0} after {}f (P:{:.0}→{:.0})",
+                    step, self.consecutive_normal_frames,
+                    self.perf_index + step, self.perf_index);
                 self.consecutive_normal_frames = 0;
             }
         }
 
-        self.perf_index = self.perf_index.clamp(self.perf_floor, 1000.0);
-        let max_inc = if damped { 50.0 } else { 100.0 };
-        if self.perf_index > old_perf + max_inc { self.perf_index = old_perf + max_inc; }
-        if damped && self.perf_index > 900.0 { self.perf_index = 900.0; }
+        // clamp & 限速
+        self.perf_index = self.perf_index.clamp(self.perf_floor, self.perf_ceil);
+        let max_inc = if damped { 40.0 } else { 70.0 };
+        if self.perf_index > old_perf + max_inc {
+            self.perf_index = old_perf + max_inc;
+        }
+        if damped && self.perf_index > 900.0 {
+            self.perf_index = 900.0;
+        }
 
         if self.is_in_soft_loading {
             let cap = if self.soft_loading_probe_countdown > 0 {
@@ -1274,53 +1478,110 @@ impl FasController {
         // ── 心跳（每30帧） ──
         self.log_counter = self.log_counter.wrapping_add(1);
         if self.log_counter % 30 == 0 {
-            log::info!("FAS | {:.0}fps avg:{:.1} | {:.2}ms ema:{:.2} | err:{:+.2}/{:+.2} thr:h{:.1}/b{:.1} | {} | P:{:.0}{}{}{}{}{}{}{}",
+            log::info!("FAS | {:.0}fps avg:{:.1} | {:.2}ms ema:{:.2} | \
+                err:{:+.2}/{:+.2} thr:h{:.1}/b{:.1} | {} | P:{:.0}{}{}{}{}{}{}{}",
                 self.current_target_fps, avg_fps, actual_ms, self.ema_actual_ms,
-                ema_err, inst_err, heavy_threshold, bounce_threshold, act, self.perf_index,
-                if self.upgrade_cooldown > 0 { format!(" cd:{}", self.upgrade_cooldown) } else { String::new() },
-                if damped { format!(" damp:{}", self.gear_change_dampen_frames) } else { String::new() },
-                if self.post_loading_downgrade_guard > 0 { format!(" guard:{}", self.post_loading_downgrade_guard) } else { String::new() },
-                if self.is_in_soft_loading { " [soft-load]".to_string() } else { String::new() },
-                if self.scene_transition_guard > 0 { format!(" [scene:{}]", self.scene_transition_guard) } else { String::new() },
-                if self.jank_cooldown > 0 { format!(" [jank-cd:{}]", self.jank_cooldown) } else { String::new() },
-                if self.downgrade_boost_active { format!(" [dg-boost:{}]", self.downgrade_boost_remaining) } else { String::new() });
+                ema_err, inst_err, heavy_threshold, bounce_threshold,
+                act, self.perf_index,
+                if self.upgrade_cooldown > 0 {
+                    format!(" cd:{}", self.upgrade_cooldown)
+                } else { String::new() },
+                if damped {
+                    format!(" damp:{}", self.gear_change_dampen_frames)
+                } else { String::new() },
+                if self.post_loading_downgrade_guard > 0 {
+                    format!(" guard:{}", self.post_loading_downgrade_guard)
+                } else { String::new() },
+                if self.is_in_soft_loading {
+                    " [soft-load]".to_string()
+                } else { String::new() },
+                if self.scene_transition_guard > 0 {
+                    format!(" [scene:{}]", self.scene_transition_guard)
+                } else { String::new() },
+                if self.jank_cooldown > 0 {
+                    format!(" [jank-cd:{}]", self.jank_cooldown)
+                } else { String::new() },
+                if self.downgrade_boost_active {
+                    format!(" [dg-boost:{}]", self.downgrade_boost_remaining)
+                } else { String::new() });
 
-            // 频率 mismatch 检测（5% 容忍度）
-            let mut needs_reapply = false;
-            for p in self.policies.iter_mut() {
-                if p.external_lock_cooldown > 0 { continue; }
-                if let Ok(s) = fs::read_to_string(
-                    format!("/sys/devices/system/cpu/cpufreq/policy{}/scaling_cur_freq", p.policy_id)) {
-                    if let Ok(actual_freq) = s.trim().parse::<u32>() {
-                        let diff = (actual_freq as i64 - p.current_freq as i64).unsigned_abs();
-                        let threshold = (p.current_freq as u64) / 20;
-                        if diff > threshold {
-                            p.mismatch_count += 1;
-                            if p.mismatch_count >= MISMATCH_LOCK_THRESHOLD {
-                                p.external_lock_cooldown = 300; // ~5s 退避
-                                p.mismatch_count = 0;
-                                log::warn!("FAS[P{}] externally locked (thermal?): yielding control for 300 frames (actual={} MHz)",
-                                    p.policy_id, actual_freq / 1000);
-                            } else {
-                                log::warn!("FAS[P{}] freq mismatch: set={} actual={} MHz (diff {}%) [{}/{}]",
-                                    p.policy_id, p.current_freq / 1000, actual_freq / 1000,
-                                    diff * 100 / p.current_freq as u64,
-                                    p.mismatch_count, MISMATCH_LOCK_THRESHOLD);
-                                needs_reapply = true;
+            // ── 频率 mismatch 检测 ──
+            if self.mismatch_probe_skip > 0 {
+                self.mismatch_probe_skip -= 1;
+            } else {
+                let mut needs_reapply = false;
+                if let Some(rx) = &self.mismatch_result_rx {
+                    if let Ok(readings) = rx.try_recv() {
+                        for (policy_id, actual_freq) in readings {
+                            if let Some(p) = self.policies.iter_mut()
+                                .find(|p| p.policy_id == policy_id
+                                    && p.external_lock_cooldown == 0)
+                            {
+                                let diff = (actual_freq as i64
+                                    - p.current_freq as i64).unsigned_abs();
+                                let threshold = (p.current_freq as u64) * 15 / 100;
+                                if diff > threshold {
+                                    p.mismatch_count += 1;
+                                    if p.mismatch_count >= MISMATCH_LOCK_THRESHOLD {
+                                        p.external_lock_cooldown = 300;
+                                        p.mismatch_count = 0;
+                                        log::warn!("FAS[P{}] externally locked: \
+                                            yielding 300f (actual={} MHz)",
+                                            p.policy_id, actual_freq / 1000);
+                                    } else {
+                                        log::warn!("FAS[P{}] mismatch: set={} actual={} \
+                                            MHz ({}%) [{}/{}]",
+                                            p.policy_id, p.current_freq / 1000,
+                                            actual_freq / 1000,
+                                            diff * 100 / p.current_freq as u64,
+                                            p.mismatch_count, MISMATCH_LOCK_THRESHOLD);
+                                        needs_reapply = true;
+                                    }
+                                } else {
+                                    p.mismatch_count =
+                                        p.mismatch_count.saturating_sub(1);
+                                }
                             }
-                        } else {
-                            p.mismatch_count = 0;
                         }
                     }
                 }
-            }
 
-            if needs_reapply {
-                log::info!("FAS: 🔧 freq mismatch detected, force reapplying unlocked policies");
-                for p in self.policies.iter_mut() {
-                    if p.external_lock_cooldown == 0 {
-                        p.force_reapply();
+                if needs_reapply {
+                    log::info!("FAS: 🔧 mismatch, force reapply unlocked policies");
+                    for p in self.policies.iter_mut() {
+                        if p.external_lock_cooldown == 0 {
+                            p.force_reapply();
+                        }
                     }
+                    self.mismatch_probe_skip = MISMATCH_REAPPLY_SKIP_CYCLES;
+                    self.mismatch_result_rx = None;
+                    self.apply_freqs();
+                    return;
+                }
+
+                // 发起新一轮异步 sysfs 读取
+                let probe_targets: Vec<(usize, bool)> = self.policies.iter()
+                    .map(|p| (p.policy_id, p.external_lock_cooldown > 0))
+                    .collect();
+
+                if !probe_targets.is_empty() {
+                    let (tx, rx) = mpsc::channel();
+                    self.mismatch_result_rx = Some(rx);
+                    std::thread::spawn(move || {
+                        let mut results = Vec::with_capacity(probe_targets.len());
+                        for (policy_id, locked) in probe_targets {
+                            if locked { continue; }
+                            let path = format!(
+                                "/sys/devices/system/cpu/cpufreq/policy{}/scaling_cur_freq",
+                                policy_id);
+                            if let Ok(s) = fs::read_to_string(&path) {
+                                if let Ok(freq) = s.trim().parse::<u32>() {
+                                    results.push((policy_id, freq));
+                                }
+                            }
+                        }
+                        let _ = tx.send(results);
+                    });
                 }
             }
         }
