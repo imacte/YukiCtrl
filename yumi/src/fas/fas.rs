@@ -354,6 +354,9 @@ pub struct FasController {
     // 软加载内齿轮匹配计数器
     soft_loading_gear_match_frames: u32,
     soft_loading_matched_gear: f32,
+    // mismatch 频率补偿
+    mismatch_compensation: f32,
+    mismatch_consecutive_cycles: u32,
 }
 
 impl FasController {
@@ -417,6 +420,8 @@ impl FasController {
             mismatch_probe_skip: 0,
             soft_loading_gear_match_frames: 0,
             soft_loading_matched_gear: 0.0,
+            mismatch_compensation: 0.0,
+            mismatch_consecutive_cycles: 0,
         }
     }
 
@@ -583,6 +588,8 @@ impl FasController {
         self.mismatch_probe_skip = 0;
         self.soft_loading_gear_match_frames = 0;
         self.soft_loading_matched_gear = 0.0;
+        self.mismatch_compensation = 0.0;
+        self.mismatch_consecutive_cycles = 0;
 
         info!("FAS init | target:{:.0}fps margin:{:.1} clusters:{} perf:{:.0}",
             self.current_target_fps, self.fps_margin, self.policies.len(), self.perf_index);
@@ -609,7 +616,7 @@ impl FasController {
         self.freq_force_counter = self.freq_force_counter.wrapping_add(1);
         let force_this_cycle = self.freq_force_counter % FREQ_FORCE_REAPPLY_INTERVAL == 0;
 
-        let ratio = self.perf_index / 1000.0;
+        let ratio = ((self.perf_index / 1000.0) + self.mismatch_compensation).clamp(0.0, 1.0);
         for policy in self.policies.iter_mut() {
             if policy.external_lock_cooldown > 0 {
                 policy.external_lock_cooldown -= 1;
@@ -721,6 +728,8 @@ impl FasController {
             self.downgrade_boost_active = false;
             self.downgrade_boost_remaining = 0;
             self.post_jank_no_decay_frames = 0;
+            self.mismatch_compensation = 0.0;
+            self.mismatch_consecutive_cycles = 0;
 
             if was_loading || was_soft {
                 self.is_in_loading_state = false;
@@ -1347,10 +1356,14 @@ impl FasController {
         let inst_err = inst_budget - actual_ms;
         let act;
 
-        // ── 蹦床 v9 ──
+        // ── 蹦床 v9.1 ──
         let old_perf = self.perf_index;
         let damped = self.gear_change_dampen_frames > 0;
         let in_scene_transition = self.scene_transition_guard > 0;
+
+        // 帧率归一化系数：以60fps为基准，高帧率下每帧衰减更少，
+        // 使得每秒累计衰减量与帧率无关
+        let fps_norm = (60.0 / self.current_target_fps.max(1.0)).sqrt();
 
         let high_perf_scale = if self.perf_index > 750.0 {
             ((1000.0 - self.perf_index) / 250.0).clamp(0.2, 1.0)
@@ -1359,7 +1372,9 @@ impl FasController {
         };
 
         let heavy_threshold = (ema_budget * 0.15).clamp(2.0, 4.0);
-        let bounce_threshold = (ema_budget * 0.15).clamp(1.0, 2.0);
+        // 高帧率下预算更紧，需要更宽的 bounce 容忍度
+        let bounce_floor = if self.current_target_fps > 100.0 { 1.3 } else { 1.0 };
+        let bounce_threshold = (ema_budget * 0.15).clamp(bounce_floor, 2.0);
 
         if inst_err < -self.instant_error_threshold_ms {
             let inc = (if damped { 30.0 } else { 55.0 }) * high_perf_scale;
@@ -1398,7 +1413,7 @@ impl FasController {
                 self.downgrade_boost_active && self.downgrade_boost_remaining > 0;
             let boost_factor = if in_downgrade_boost { 0.0 } else { 1.0 };
 
-            let decay_scale = low_perf_factor * proximity_factor * boost_factor;
+            let decay_scale = low_perf_factor * proximity_factor * boost_factor * fps_norm;
 
             if in_jank_cooldown {
                 let base = if in_scene_transition { 2.0 } else { 3.0 };
@@ -1445,7 +1460,7 @@ impl FasController {
                 && init_elapsed_ms > 8000
             {
                 let step = ((self.perf_index - 500.0) / 500.0 * FAST_DECAY_MAX_STEP)
-                    .clamp(FAST_DECAY_MIN_STEP, FAST_DECAY_MAX_STEP);
+                    .clamp(FAST_DECAY_MIN_STEP, FAST_DECAY_MAX_STEP) * fps_norm;
                 self.perf_index -= step;
                 log::debug!("FAS: fast_decay -{:.0} after {}f (P:{:.0}→{:.0})",
                     step, self.consecutive_normal_frames,
@@ -1479,7 +1494,7 @@ impl FasController {
         self.log_counter = self.log_counter.wrapping_add(1);
         if self.log_counter % 30 == 0 {
             log::info!("FAS | {:.0}fps avg:{:.1} | {:.2}ms ema:{:.2} | \
-                err:{:+.2}/{:+.2} thr:h{:.1}/b{:.1} | {} | P:{:.0}{}{}{}{}{}{}{}",
+                err:{:+.2}/{:+.2} thr:h{:.1}/b{:.1} | {} | P:{:.0}{}{}{}{}{}{}{}{}",
                 self.current_target_fps, avg_fps, actual_ms, self.ema_actual_ms,
                 ema_err, inst_err, heavy_threshold, bounce_threshold,
                 act, self.perf_index,
@@ -1503,13 +1518,18 @@ impl FasController {
                 } else { String::new() },
                 if self.downgrade_boost_active {
                     format!(" [dg-boost:{}]", self.downgrade_boost_remaining)
+                } else { String::new() },
+                if self.mismatch_compensation > 0.005 {
+                    format!(" [mm-comp:{:.3}]", self.mismatch_compensation)
                 } else { String::new() });
 
-            // ── 频率 mismatch 检测 ──
+            // ── 频率 mismatch 检测 & 补偿 ──
             if self.mismatch_probe_skip > 0 {
                 self.mismatch_probe_skip -= 1;
             } else {
                 let mut needs_reapply = false;
+                let mut mismatch_found_this_cycle = false;
+                let mut worst_ratio: f32 = 1.0; // actual/set 最差比例
                 if let Some(rx) = &self.mismatch_result_rx {
                     if let Ok(readings) = rx.try_recv() {
                         for (policy_id, actual_freq) in readings {
@@ -1521,6 +1541,12 @@ impl FasController {
                                     - p.current_freq as i64).unsigned_abs();
                                 let threshold = (p.current_freq as u64) * 15 / 100;
                                 if diff > threshold {
+                                    mismatch_found_this_cycle = true;
+                                    let ratio = actual_freq as f32
+                                        / p.current_freq.max(1) as f32;
+                                    if ratio < worst_ratio {
+                                        worst_ratio = ratio;
+                                    }
                                     p.mismatch_count += 1;
                                     if p.mismatch_count >= MISMATCH_LOCK_THRESHOLD {
                                         p.external_lock_cooldown = 300;
@@ -1543,6 +1569,30 @@ impl FasController {
                                 }
                             }
                         }
+                    }
+                }
+
+                // 更新 mismatch 补偿
+                if mismatch_found_this_cycle {
+                    self.mismatch_consecutive_cycles += 1;
+                    // 根据频率差距计算所需补偿：如果实际只有设定的70%，
+                    // 需要请求更高30%的 ratio 来补偿
+                    let needed = ((1.0 / worst_ratio.max(0.3)) - 1.0).clamp(0.0, 0.35);
+                    // 逐步接近目标补偿值，避免突变
+                    let alpha = if self.mismatch_consecutive_cycles >= 3 { 0.4 } else { 0.2 };
+                    self.mismatch_compensation =
+                        self.mismatch_compensation * (1.0 - alpha) + needed * alpha;
+                    if self.mismatch_consecutive_cycles % 3 == 0 {
+                        log::info!("FAS: 🔧 mismatch comp: worst_ratio={:.2} comp={:.3} ({}x)",
+                            worst_ratio, self.mismatch_compensation,
+                            self.mismatch_consecutive_cycles);
+                    }
+                } else {
+                    // 无 mismatch 时缓慢衰减补偿
+                    self.mismatch_consecutive_cycles = 0;
+                    self.mismatch_compensation *= 0.85;
+                    if self.mismatch_compensation < 0.005 {
+                        self.mismatch_compensation = 0.0;
                     }
                 }
 
