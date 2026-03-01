@@ -44,36 +44,36 @@ pub struct FasRulesConfig {
     #[serde(default = "default_fps_margin")]
     pub fps_margin: String,
     #[serde(default = "default_heavy_frame_ms")]
-    heavy_frame_threshold_ms: f32,
+    pub heavy_frame_threshold_ms: f32,
     #[serde(default = "default_loading_cumulative_ms")]
-    loading_cumulative_ms: f32,
+    pub loading_cumulative_ms: f32,
     #[serde(default = "default_post_loading_ignore")]
-    post_loading_ignore_frames: u32,
+    pub post_loading_ignore_frames: u32,
     #[serde(default = "default_post_loading_perf_min")]
-    post_loading_perf_min: f32,
+    pub post_loading_perf_min: f32,
     #[serde(default = "default_post_loading_perf_max")]
-    post_loading_perf_max: f32,
+    pub post_loading_perf_max: f32,
     #[serde(default = "default_instant_error_threshold")]
-    instant_error_threshold_ms: f32,
+    pub instant_error_threshold_ms: f32,
     #[serde(default = "default_perf_floor")]
-    perf_floor: f32,
+    pub perf_floor: f32,
     #[serde(default = "default_hysteresis")]
-    freq_hysteresis: f32,
+    pub freq_hysteresis: f32,
     #[serde(default = "default_perf_ceil")]
-    perf_ceil: f32,
+    pub perf_ceil: f32,
 }
 
-fn default_fps_gears() -> Vec<f32> { vec![30.0, 60.0, 90.0, 120.0, 144.0] }
-fn default_fps_margin() -> String { "3".to_string() }
-fn default_heavy_frame_ms() -> f32 { 150.0 }
-fn default_loading_cumulative_ms() -> f32 { 2500.0 }
-fn default_post_loading_ignore() -> u32 { 5 }
-fn default_post_loading_perf_min() -> f32 { 500.0 }
-fn default_post_loading_perf_max() -> f32 { 800.0 }
-fn default_instant_error_threshold() -> f32 { 4.0 }
-fn default_perf_floor() -> f32 { 150.0 }
-fn default_hysteresis() -> f32 { 0.015 }
-fn default_perf_ceil() -> f32 { 850.0 }
+pub fn default_fps_gears() -> Vec<f32> { vec![30.0, 60.0, 90.0, 120.0, 144.0] }
+pub fn default_fps_margin() -> String { "3".to_string() }
+pub fn default_heavy_frame_ms() -> f32 { 150.0 }
+pub fn default_loading_cumulative_ms() -> f32 { 2500.0 }
+pub fn default_post_loading_ignore() -> u32 { 5 }
+pub fn default_post_loading_perf_min() -> f32 { 500.0 }
+pub fn default_post_loading_perf_max() -> f32 { 800.0 }
+pub fn default_instant_error_threshold() -> f32 { 4.0 }
+pub fn default_perf_floor() -> f32 { 150.0 }
+pub fn default_hysteresis() -> f32 { 0.015 }
+pub fn default_perf_ceil() -> f32 { 850.0 }
 
 
 impl Default for FasRulesConfig {
@@ -105,6 +105,8 @@ pub struct RulesConfig {
     pub dynamic_enabled: bool,
     pub global_mode: String,
     pub app_modes: HashMap<String, String>,
+    #[serde(default)]
+    pub ignored_apps: Vec<String>,
     #[serde(default)]
     pub fas_rules: FasRulesConfig,
 }

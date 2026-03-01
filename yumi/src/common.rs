@@ -15,6 +15,7 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+use crate::monitor::config::RulesConfig;
 use std::path::PathBuf;
 use std::env;
 
@@ -33,6 +34,7 @@ pub enum DaemonEvent {
         fps: f32,
         frame_delta_ns: u64, // 纳秒级帧间隔
     },
+    ConfigReload(RulesConfig),
 }
 
 /// 获取模块根目录的绝对路径

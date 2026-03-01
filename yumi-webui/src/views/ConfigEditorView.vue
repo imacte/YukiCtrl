@@ -261,7 +261,21 @@ const handleItemClick = (fullPath: string, value: any) => {
       { name: 'max', subname: '最高频率（动态）' },
       ...[...freqs].reverse().map(f => ({ name: String(f), subname: formatFreq(f) })),
     ];
-    showFreqSheet.value = true;
+    const isArrayField = Array.isArray(value) || fullPath === 'ignored_apps' || fullPath.endsWith('fps_gears');
+
+    if (isArrayField) { 
+      editingType.value = 'array'; 
+      editingValue.value = Array.isArray(value) ? value.join(', ') : ''; 
+    }
+    else if (typeof value === 'number') { 
+      editingType.value = 'number'; 
+      editingValue.value = String(value); 
+    }
+    else { 
+      editingType.value = 'string'; 
+      editingValue.value = String(value); 
+    }
+    showEditDialog.value = true;
     return;
   }
 
@@ -298,10 +312,15 @@ const confirmEdit = () => {
   let val: any = editingValue.value;
   if (editingType.value === 'number') val = Number(val);
   if (editingType.value === 'array') {
-    val = val.split(',').map((s: string) => {
-      const trimmed = s.trim();
-      return isNaN(Number(trimmed)) ? trimmed : Number(trimmed);
-    }).filter((s: any) => s !== '');
+    const strArray = val.split(',')
+      .map((s: string) => s.trim())
+      .filter((s: string) => s !== '');
+      
+    if (editingKeyPath.value.endsWith('fps_gears')) {
+      val = strArray.map(Number).filter((n: number) => !isNaN(n));
+    } else {
+      val = strArray;
+    }
   }
   setDeepValue(currentData.value, editingKeyPath.value, val);
   saveConfig();

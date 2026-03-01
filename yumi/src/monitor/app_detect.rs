@@ -96,12 +96,15 @@ fn set_current_package(pkg: &str, pid: i32) {
 // ==================== [核心：纯 Cgroup 检测逻辑] ====================
 
 /// 判断是否为有效的用户应用包名
-fn is_valid_user_app(pkg: &str) -> bool {
+fn is_valid_user_app(pkg: &str, ignored_apps: &[String]) -> bool {
     if pkg.is_empty() || !pkg.contains('.') || pkg.starts_with('/') || pkg.starts_with('.') || pkg.contains(':') {
         return false;
     }
     if IME_BLOCKLIST.contains(pkg) {
         return false; 
+    }
+    if ignored_apps.iter().any(|ignored| pkg == ignored || pkg.contains(ignored)) {
+        return false;
     }
     match pkg {
         "com.android.systemui" => false,
@@ -114,6 +117,7 @@ fn is_valid_user_app(pkg: &str) -> bool {
         "com.xiaomi.vtcamera" => false,
         "com.android.providers.media.module" => false,
         "com.google.android.gms.ui" => false,
+        "com.xiaomi.mibrain.speech" => false,
         _ => {
             if pkg.contains("magisk") || pkg.contains("mtiodaemon") { return false; }
             if pkg.contains("ads_monitor") { return false; }
@@ -124,16 +128,16 @@ fn is_valid_user_app(pkg: &str) -> bool {
 }
 
 // 提取核心检测逻辑
-fn check_cgroup_path(path: &str) -> Option<(String, i32)> {
+fn check_cgroup_path(path: &str, ignored_apps: &[String]) -> Option<(String, i32)> {
     if let Ok(content) = utils::read_file_content(path) {
         let pids: Vec<&str> = content.split_whitespace().collect();
         for pid_str in pids.iter().rev() {
             let cmdline_path = format!("/proc/{}/cmdline", pid_str);
             if let Ok(cmdline) = utils::read_file_content(&cmdline_path) {
                 let pkg_name = cmdline.split('\0').next().unwrap_or("").trim();
-                if is_valid_user_app(pkg_name) {
+                if is_valid_user_app(pkg_name, ignored_apps) {
                     let pid = pid_str.parse::<i32>().unwrap_or(0);
-                    return Some((pkg_name.to_string(), pid)); // 返回元组
+                    return Some((pkg_name.to_string(), pid));
                 }
             }
         }
@@ -142,7 +146,7 @@ fn check_cgroup_path(path: &str) -> Option<(String, i32)> {
 }
 
 /// 从 Cgroup 读取前台应用
-fn get_focused_app_from_cgroup() -> Result<(String, i32), Box<dyn Error>> {
+fn get_focused_app_from_cgroup(ignored_apps: &[String]) -> Result<(String, i32), Box<dyn Error>> {
     let paths = [
         "/dev/cpuset/top-app/cgroup.procs",
         "/sys/fs/cgroup/cpuset/top-app/cgroup.procs",
@@ -151,14 +155,14 @@ fn get_focused_app_from_cgroup() -> Result<(String, i32), Box<dyn Error>> {
 
     let cached = VALID_CGROUP_IDX.load(Ordering::Relaxed);
     if cached < paths.len() {
-        if let Some(res) = check_cgroup_path(paths[cached]) {
-            return Ok(res); // 现在返回的是 (String, i32)
+        if let Some(res) = check_cgroup_path(paths[cached], ignored_apps) {
+            return Ok(res); 
         }
     }
 
     for (i, path) in paths.iter().enumerate() {
         if i == cached { continue; }
-        if let Some(res) = check_cgroup_path(path) {
+        if let Some(res) = check_cgroup_path(path, ignored_apps) {
             VALID_CGROUP_IDX.store(i, Ordering::Relaxed);
             return Ok(res);
         }
@@ -182,13 +186,15 @@ pub fn get_default_rules() -> RulesConfig {
         dynamic_enabled: true,
         global_mode: "balance".to_string(),
         app_modes: HashMap::new(),
+        ignored_apps: Vec::new(),
         fas_rules: super::config::FasRulesConfig::default(),
     }
 }
 
 pub fn watch_config_file(
     config_arc: Arc<Mutex<RulesConfig>>,
-    force_refresh_arc: Arc<AtomicBool>
+    force_refresh_arc: Arc<AtomicBool>,
+    tx: Sender<DaemonEvent>
 ) -> Result<(), Box<dyn Error>> {
     let mut inotify = Inotify::init()?;
     let rules_path = config::get_rules_path();
@@ -203,9 +209,20 @@ pub fn watch_config_file(
             thread::sleep(Duration::from_millis(100));
             while let Ok(events) = inotify.read_events(&mut buffer) { if events.peekable().peek().is_none() { break; } }
             info!("{}", t("app-detect-reloading"));
+            
             let new_config = config::read_config::<RulesConfig, _>(&rules_path)
-                                .unwrap_or_else(|e| { warn!("{}", t_with_args("app-detect-load-failed", &fluent_args!("error" => e.to_string()))); get_default_rules() });
-            *config_arc.lock().unwrap() = new_config; 
+                                .unwrap_or_else(|e| { 
+                                    warn!("{}", t_with_args("app-detect-load-failed", &fluent_args!("error" => e.to_string()))); 
+                                    get_default_rules() 
+                                });
+            
+            *config_arc.lock().unwrap() = new_config.clone(); // <--- 注意这里克隆一份用于赋值
+            
+            // ▼ 新增：将新读取的配置打包成事件发给主循环
+            if let Err(e) = tx.send(DaemonEvent::ConfigReload(new_config)) {
+                warn!("[Config] Failed to send ConfigReload event: {}", e);
+            }
+            
             info!("{}", t("app-detect-reload-success"));
             force_refresh_arc.store(true, Ordering::SeqCst);
         }
@@ -245,9 +262,12 @@ pub fn app_detection_loop(
             thread::sleep(Duration::from_secs(1));
             continue;
         }
+                
+        // 克隆一份当前的排除列表（避免在 I/O 操作期间一直持有配置锁）
+        let ignored_apps = config_arc.lock().unwrap().ignored_apps.clone();
         
-        // === 亮屏检测逻辑 ===
-        let detection_result = get_focused_app_from_cgroup();
+        // 将其传递给检测函数
+        let detection_result = get_focused_app_from_cgroup(&ignored_apps);
         let (current_package, current_pid) = match detection_result {
             Ok((pkg, pid)) => (pkg, pid),
             Err(_) => (last_package.clone(), 0), 
@@ -259,7 +279,8 @@ pub fn app_detection_loop(
         {
             // 检测到变化，等待 500ms 后重新确认
             thread::sleep(Duration::from_millis(500));
-            match get_focused_app_from_cgroup() {
+            // 防抖逻辑也需要传入该列表
+            match get_focused_app_from_cgroup(&ignored_apps) {
                 Ok((confirmed_pkg, confirmed_pid)) => {
                     if confirmed_pkg == last_package {
                         // 包名变回去了，说明是瞬态切换（小窗操作），忽略

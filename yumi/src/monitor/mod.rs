@@ -28,7 +28,7 @@ pub mod app_detect;
 pub mod screen_detect;
 pub mod fps_monitor;
 
-use crate::common::DaemonEvent; // <--- 替换为新的事件类型
+use crate::common::DaemonEvent;
 use crate::i18n::t;
 
 // 启动函数
@@ -72,12 +72,14 @@ pub fn start_monitor(tx: Sender<DaemonEvent>) -> Result<(), Box<dyn Error>> {
         })?;
 
     // 4. 启动配置监控线程
+    let tx_config = tx.clone();
     thread::Builder::new()
         .name("config_watcher".to_string())
         .spawn(move || {
             if let Err(e) = app_detect::watch_config_file(
                 config_arc_clone_for_watcher,
-                force_refresh_clone_for_watcher
+                force_refresh_clone_for_watcher,
+                tx_config // <--- 新增：传入 tx
             ) {
                 error!("[Main] Config watcher thread failed: {}", e);
             }

@@ -12,6 +12,7 @@ const mockRules = {
     latency_threshold: "",
     poll_interval_ms: ""
   },
+  ignored_apps: [],
   app_modes: {
     'com.tencent.mm': 'powersave',
     'com.android.chrome': 'fast'

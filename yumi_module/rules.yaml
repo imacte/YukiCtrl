@@ -26,4 +26,5 @@ fas_rules:
 
   perf_ceil: 850.0
 
+ignored_apps: {}
 app_modes: {}

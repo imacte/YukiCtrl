@@ -136,6 +136,8 @@ pub fn start_scheduler_thread(rx: mpsc::Receiver<DaemonEvent>) -> Result<()> {
             
             // 初始化 FAS 控制器 (现在是空的，等待动态加载)
             let mut fas_controller = crate::fas::fas::FasController::new();
+            let rules_path = crate::monitor::config::get_rules_path();
+            let mut current_rules = crate::monitor::config::read_config::<crate::monitor::config::RulesConfig, _>(&rules_path).unwrap_or_default();
 
             let mut fas_suspended_at: Option<Instant> = None;
             let mut fas_suspended_package = String::new();
@@ -205,7 +207,7 @@ pub fn start_scheduler_thread(rx: mpsc::Receiver<DaemonEvent>) -> Result<()> {
                                     fas_suspended_package.clear();
                                     fas_suspended_clone.store(false, Ordering::SeqCst);
                                     let config_lock = config_clone.read().unwrap();
-                                    fas_controller.load_policies(&config_lock);
+                                    fas_controller.load_policies(&config_lock, &current_rules.fas_rules);
                                     log::info!("Entered FAS mode, FAS controller is now taking over CPU frequencies.");
                                 }
                             }
@@ -258,6 +260,21 @@ pub fn start_scheduler_thread(rx: mpsc::Receiver<DaemonEvent>) -> Result<()> {
                         let current_mode = mode_clone.lock().unwrap().clone();
                         if current_mode == "fas" {
                             fas_controller.update_frame(frame_delta_ns);
+                        }
+                    }
+                    // 处理热重载事件
+                    crate::common::DaemonEvent::ConfigReload(new_rules) => {
+                        log::info!("Scheduler received config reload event. Updating in-memory rules...");
+                        // 1. 更新本地缓存
+                        current_rules = new_rules;
+                        
+                        // 2. 如果当前正好在 FAS 模式，说明游戏/重载应用正在运行，需要立即让新规则生效！
+                        let current_mode = mode_clone.lock().unwrap().clone();
+                        if current_mode == "fas" {
+                            let config_lock = config_clone.read().unwrap();
+                            // 重新调用 load_policies，传入最新的规则
+                            fas_controller.load_policies(&config_lock, &current_rules.fas_rules);
+                            log::info!("FAS is currently active. New rules have been applied dynamically.");
                         }
                     }
                 }

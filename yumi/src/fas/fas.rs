@@ -16,75 +16,13 @@
  */
 
 use crate::scheduler::config::Config;
+use crate::{monitor, monitor::config::FasRulesConfig};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Write, Seek, SeekFrom};
 use std::path::Path;
 use std::sync::mpsc;
 use log::info;
-use serde::Deserialize;
 use std::time::Instant;
-
-#[derive(Deserialize, Default)]
-struct RulesYaml {
-    #[serde(default)]
-    fas_rules: FasRules,
-}
-
-#[derive(Deserialize)]
-struct FasRules {
-    #[serde(default = "default_gears")]
-    fps_gears: Vec<f32>,
-    #[serde(default = "default_margin")]
-    fps_margin: String,
-    #[serde(default = "default_heavy_frame_ms")]
-    heavy_frame_threshold_ms: f32,
-    #[serde(default = "default_loading_cumulative_ms")]
-    loading_cumulative_ms: f32,
-    #[serde(default = "default_post_loading_ignore")]
-    post_loading_ignore_frames: u32,
-    #[serde(default = "default_post_loading_perf_min")]
-    post_loading_perf_min: f32,
-    #[serde(default = "default_post_loading_perf_max")]
-    post_loading_perf_max: f32,
-    #[serde(default = "default_instant_error_threshold")]
-    instant_error_threshold_ms: f32,
-    #[serde(default = "default_perf_floor")]
-    perf_floor: f32,
-    #[serde(default = "default_hysteresis")]
-    freq_hysteresis: f32,
-    #[serde(default = "default_perf_ceil")]
-    perf_ceil: f32,
-}
-
-impl Default for FasRules {
-    fn default() -> Self {
-        Self {
-            fps_gears: default_gears(),
-            fps_margin: default_margin(),
-            heavy_frame_threshold_ms: default_heavy_frame_ms(),
-            loading_cumulative_ms: default_loading_cumulative_ms(),
-            post_loading_ignore_frames: default_post_loading_ignore(),
-            post_loading_perf_min: default_post_loading_perf_min(),
-            post_loading_perf_max: default_post_loading_perf_max(),
-            instant_error_threshold_ms: default_instant_error_threshold(),
-            perf_floor: default_perf_floor(),
-            freq_hysteresis: default_hysteresis(),
-            perf_ceil: default_perf_ceil(),
-        }
-    }
-}
-
-fn default_gears() -> Vec<f32> { vec![20.0, 24.0, 30.0, 45.0, 60.0, 90.0, 120.0, 144.0] }
-fn default_margin() -> String { "3.0".to_string() }
-fn default_heavy_frame_ms() -> f32 { 150.0 }
-fn default_loading_cumulative_ms() -> f32 { 2500.0 }
-fn default_post_loading_ignore() -> u32 { 5 }
-fn default_post_loading_perf_min() -> f32 { 500.0 }
-fn default_post_loading_perf_max() -> f32 { 800.0 }
-fn default_instant_error_threshold() -> f32 { 4.0 }
-fn default_perf_floor() -> f32 { 150.0 }
-fn default_hysteresis() -> f32 { 0.015 }
-fn default_perf_ceil() -> f32 { 850.0 }
 
 /// sysfs 频率写入器，带缓存
 pub struct FastWriter {
@@ -366,7 +304,7 @@ pub struct FasController {
 impl FasController {
     pub fn new() -> Self {
         Self {
-            fps_gears: default_gears(),
+            fps_gears: monitor::config::default_fps_gears(),
             fps_margin: 3.0,
             current_target_fps: 60.0,
             perf_index: 400.0,
@@ -397,15 +335,15 @@ impl FasController {
             sustained_loading: false,
             post_loading_downgrade_guard: 0,
             loading_reentry_cooldown: 0,
-            heavy_frame_threshold_ms: default_heavy_frame_ms(),
-            loading_cumulative_ms: default_loading_cumulative_ms(),
-            post_loading_ignore_frames: default_post_loading_ignore(),
-            post_loading_perf_min: default_post_loading_perf_min(),
-            post_loading_perf_max: default_post_loading_perf_max(),
-            instant_error_threshold_ms: default_instant_error_threshold(),
-            perf_floor: default_perf_floor(),
-            freq_hysteresis: default_hysteresis(),
-            perf_ceil: default_perf_ceil(),
+            heavy_frame_threshold_ms: monitor::config::default_heavy_frame_ms(),
+            loading_cumulative_ms: monitor::config::default_loading_cumulative_ms(),
+            post_loading_ignore_frames: monitor::config::default_post_loading_ignore(),
+            post_loading_perf_min: monitor::config::default_post_loading_perf_min(),
+            post_loading_perf_max: monitor::config::default_post_loading_perf_max(),
+            instant_error_threshold_ms: monitor::config::default_instant_error_threshold(),
+            perf_floor: monitor::config::default_perf_floor(),
+            freq_hysteresis: monitor::config::default_hysteresis(),
+            perf_ceil: monitor::config::default_perf_ceil(),
             frame_time_accumulator_ns: 0,
             init_time: Instant::now(),
             freq_force_counter: 0,
@@ -463,37 +401,29 @@ impl FasController {
         None
     }
 
-    pub fn load_policies(&mut self, config: &Config) {
+    pub fn load_policies(&mut self, config: &Config, fas_rules: &FasRulesConfig) {
         self.policies.clear();
         self.mismatch_result_rx = None;
-        let _ = crate::utils::try_write_file(
-            "/sys/module/perfmgr/parameters/perfmgr_enable", "0");
-        let _ = crate::utils::try_write_file(
-            "/sys/module/mtk_fpsgo/parameters/perfmgr_enable", "0");
+        let _ = crate::utils::try_write_file("/sys/module/perfmgr/parameters/perfmgr_enable", "0");
+        let _ = crate::utils::try_write_file("/sys/module/mtk_fpsgo/parameters/perfmgr_enable", "0");
         log::debug!("FAS: disabled system FEAS/FPSGO");
 
-        let root = crate::common::get_module_root();
-        let rules_path = root.join("config/rules.yaml");
-
-        if let Ok(content) = fs::read_to_string(&rules_path) {
-            if let Ok(rules) = serde_yaml::from_str::<RulesYaml>(&content) {
-                if !rules.fas_rules.fps_gears.is_empty() {
-                    self.fps_gears = rules.fas_rules.fps_gears;
-                }
-                if let Ok(margin) = rules.fas_rules.fps_margin.parse::<f32>() {
-                    self.fps_margin = margin;
-                }
-                self.heavy_frame_threshold_ms = rules.fas_rules.heavy_frame_threshold_ms;
-                self.loading_cumulative_ms = rules.fas_rules.loading_cumulative_ms;
-                self.post_loading_ignore_frames = rules.fas_rules.post_loading_ignore_frames;
-                self.post_loading_perf_min = rules.fas_rules.post_loading_perf_min;
-                self.post_loading_perf_max = rules.fas_rules.post_loading_perf_max;
-                self.instant_error_threshold_ms = rules.fas_rules.instant_error_threshold_ms;
-                self.perf_floor = rules.fas_rules.perf_floor;
-                self.freq_hysteresis = rules.fas_rules.freq_hysteresis;
-                self.perf_ceil = rules.fas_rules.perf_ceil.max(self.perf_floor);
-            }
+        // 直接从传入的 fas_rules 中读取配置
+        if !fas_rules.fps_gears.is_empty() {
+            self.fps_gears = fas_rules.fps_gears.clone();
         }
+        if let Ok(margin) = fas_rules.fps_margin.parse::<f32>() {
+            self.fps_margin = margin;
+        }
+        self.heavy_frame_threshold_ms = fas_rules.heavy_frame_threshold_ms;
+        self.loading_cumulative_ms = fas_rules.loading_cumulative_ms;
+        self.post_loading_ignore_frames = fas_rules.post_loading_ignore_frames;
+        self.post_loading_perf_min = fas_rules.post_loading_perf_min;
+        self.post_loading_perf_max = fas_rules.post_loading_perf_max;
+        self.instant_error_threshold_ms = fas_rules.instant_error_threshold_ms;
+        self.perf_floor = fas_rules.perf_floor;
+        self.freq_hysteresis = fas_rules.freq_hysteresis;
+        self.perf_ceil = fas_rules.perf_ceil.max(self.perf_floor);
 
         let core_info = &config.core_framework;
         let clusters = vec![
