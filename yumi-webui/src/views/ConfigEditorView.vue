@@ -54,28 +54,36 @@ const newPathName = ref('');
 const addingPathUnderGov = ref('');
 
 const getCoreTypeFromKey = (key: string): string | null => {
-  if (key.startsWith('SuperBigCore')) return 'SuperBigCore';
-  if (key.startsWith('BigCore')) return 'BigCore';
-  if (key.startsWith('MediumCore')) return 'MediumCore';
-  if (key.startsWith('SmallCore')) return 'SmallCore';
+  const k = key.toLowerCase();
+  if (k.includes('superbigcore') || k.includes('super_big_core')) return 'SuperBigCore';
+  if (k.includes('bigcore') || k.includes('big_core')) return 'BigCore';
+  if (k.includes('mediumcore') || k.includes('medium_core')) return 'MediumCore';
+  if (k.includes('smallcore') || k.includes('small_core')) return 'SmallCore';
   return null;
 };
 
 const isFreqField = (path: string): boolean => {
   const parts = path.split('/');
   const key = parts[parts.length - 1] || '';
-  // Freq 分组下的核心频率字段
-  if (parts.includes('Freq') && getCoreTypeFromKey(key) !== null) return true;
-  // AppLaunchBoostSettings 下以 BoostFreq 结尾的核心字段
-  if (parts.includes('AppLaunchBoostSettings') && key.endsWith('BoostFreq') && getCoreTypeFromKey(key) !== null) return true;
+  const lowerParts = parts.map(p => p.toLowerCase());
+  const lowerKey = key.toLowerCase();
+
+  // Freq / freq 分组下的核心频率字段
+  if (lowerParts.includes('freq') && getCoreTypeFromKey(key) !== null) return true;
+  // AppLaunchBoostSettings 下以 BoostFreq 或 boost_freq 结尾的核心字段
+  if (lowerParts.includes('applaunchboostsettings') || lowerParts.includes('app_launch_boost_settings')) {
+    if ((lowerKey.endsWith('boostfreq') || lowerKey.endsWith('boost_freq')) && getCoreTypeFromKey(key) !== null) return true;
+  }
   return false;
 };
 
 const isGovField = (path: string): boolean => {
   const parts = path.split('/');
   const key = parts[parts.length - 1] || '';
-  // global 也走调速器选择器；其余核心字段同样走
-  return parts.includes('Governor') && (key === 'global' || getCoreTypeFromKey(key) !== null);
+  const lowerParts = parts.map(p => p.toLowerCase());
+  const lowerKey = key.toLowerCase();
+
+  return lowerParts.includes('governor') && (lowerKey === 'global' || getCoreTypeFromKey(key) !== null);
 };
 
 const getPolicyForKey = (key: string): number => {
@@ -111,12 +119,13 @@ const loadCpuInfo = async () => {
       ? currentData.value
       : await Bridge.getMainConfig();
 
-    const cf = cfg.CoreFramework || {};
+    // 兼容 PascalCase (Mock) 和 snake_case (真实 Rust YAML)
+    const cf = cfg.CoreFramework || cfg.core_framework || {};
     corePathMap.value = {
-      SmallCore:    typeof cf.SmallCorePath    === 'number' ? cf.SmallCorePath    : -1,
-      MediumCore:   typeof cf.MediumCorePath   === 'number' ? cf.MediumCorePath   : -1,
-      BigCore:      typeof cf.BigCorePath      === 'number' ? cf.BigCorePath      : -1,
-      SuperBigCore: typeof cf.SuperBigCorePath === 'number' ? cf.SuperBigCorePath : -1,
+      SmallCore:    cf.SmallCorePath    ?? cf.small_core_path    ?? -1,
+      MediumCore:   cf.MediumCorePath   ?? cf.medium_core_path   ?? -1,
+      BigCore:      cf.BigCorePath      ?? cf.big_core_path      ?? -1,
+      SuperBigCore: cf.SuperBigCorePath ?? cf.super_big_core_path ?? -1,
     };
 
     const policies = await Bridge.getCpuPolicies();
@@ -261,21 +270,7 @@ const handleItemClick = (fullPath: string, value: any) => {
       { name: 'max', subname: '最高频率（动态）' },
       ...[...freqs].reverse().map(f => ({ name: String(f), subname: formatFreq(f) })),
     ];
-    const isArrayField = Array.isArray(value) || fullPath === 'ignored_apps' || fullPath.endsWith('fps_gears');
-
-    if (isArrayField) { 
-      editingType.value = 'array'; 
-      editingValue.value = Array.isArray(value) ? value.join(', ') : ''; 
-    }
-    else if (typeof value === 'number') { 
-      editingType.value = 'number'; 
-      editingValue.value = String(value); 
-    }
-    else { 
-      editingType.value = 'string'; 
-      editingValue.value = String(value); 
-    }
-    showEditDialog.value = true;
+    showFreqSheet.value = true;
     return;
   }
 
@@ -302,9 +297,20 @@ const handleItemClick = (fullPath: string, value: any) => {
   }
 
   // 默认：普通输入框
-  if (Array.isArray(value)) { editingType.value = 'array'; editingValue.value = value.join(', '); }
-  else if (typeof value === 'number') { editingType.value = 'number'; editingValue.value = String(value); }
-  else { editingType.value = 'string'; editingValue.value = String(value); }
+  const isArrayField = Array.isArray(value) || fullPath === 'ignored_apps' || fullPath.endsWith('fps_gears');
+
+  if (isArrayField) { 
+    editingType.value = 'array'; 
+    editingValue.value = Array.isArray(value) ? value.join(', ') : ''; 
+  }
+  else if (typeof value === 'number') { 
+    editingType.value = 'number'; 
+    editingValue.value = String(value); 
+  }
+  else { 
+    editingType.value = 'string'; 
+    editingValue.value = String(value); 
+  }
   showEditDialog.value = true;
 };
 

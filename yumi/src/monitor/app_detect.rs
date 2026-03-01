@@ -216,9 +216,8 @@ pub fn watch_config_file(
                                     get_default_rules() 
                                 });
             
-            *config_arc.lock().unwrap() = new_config.clone(); // <--- 注意这里克隆一份用于赋值
+            *config_arc.lock().unwrap() = new_config.clone();
             
-            // ▼ 新增：将新读取的配置打包成事件发给主循环
             if let Err(e) = tx.send(DaemonEvent::ConfigReload(new_config)) {
                 warn!("[Config] Failed to send ConfigReload event: {}", e);
             }

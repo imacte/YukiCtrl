@@ -79,7 +79,7 @@ pub fn start_monitor(tx: Sender<DaemonEvent>) -> Result<(), Box<dyn Error>> {
             if let Err(e) = app_detect::watch_config_file(
                 config_arc_clone_for_watcher,
                 force_refresh_clone_for_watcher,
-                tx_config // <--- 新增：传入 tx
+                tx_config
             ) {
                 error!("[Main] Config watcher thread failed: {}", e);
             }
