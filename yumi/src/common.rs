@@ -25,15 +25,23 @@ pub enum DaemonEvent {
     /// 低频事件：前台应用切换或环境温度变化引起的模式改变
     ModeChange {
         package_name: String,
+        pid: i32,
         mode: String,
         temperature: f64,
     },
     /// 高频事件：eBPF 捕获到的底层渲染帧数据
     FrameUpdate {
-        package_name: String,
         fps: f32,
         frame_delta_ns: u64, // 纳秒级帧间隔
     },
+    /// eBPF 全局系统负载更新 (每 X 毫秒触发一次)
+    SystemLoadUpdate {
+        /// 每个 CPU 核心的真实利用率 (0.0 ~ 1.0)，数组索引即 cpu_id
+        core_utils: Vec<f32>,
+        /// 如果当前有前台应用，这是该应用最吃 CPU 的那 1 个线程的利用率
+        foreground_max_util: f32, 
+    },
+
     ConfigReload(RulesConfig),
 }
 

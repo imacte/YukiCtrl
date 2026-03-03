@@ -18,20 +18,18 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use log::{info, warn, debug};
 use inotify::{Inotify, WatchMask};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering, AtomicI32};
 use std::error::Error;
 use std::process::Command;
 use std::sync::mpsc::Sender;
-use std::sync::atomic::AtomicI32;
 
 use crate::common::DaemonEvent;
 use crate::i18n::{t, t_with_args};
 use crate::fluent_args;
 use crate::utils;
-
 use super::config::{self, RulesConfig};
 
 // 缓存有效的 Cgroup 路径索引，避免每次循环都去探测无效路径
@@ -77,10 +75,6 @@ fn get_system_ime_packages() -> HashSet<String> {
 lazy_static::lazy_static! {
     static ref CURRENT_PACKAGE: Arc<Mutex<String>> = Arc::new(Mutex::new("".to_string()));    
     static ref IME_BLOCKLIST: HashSet<String> = get_system_ime_packages();
-}
-
-pub fn get_current_package() -> String {
-    CURRENT_PACKAGE.lock().unwrap().clone()
 }
 
 pub fn get_current_pid() -> i32 {
@@ -188,6 +182,7 @@ pub fn get_default_rules() -> RulesConfig {
         app_modes: HashMap::new(),
         ignored_apps: Vec::new(),
         fas_rules: super::config::FasRulesConfig::default(),
+        cpu_load_governor: super::config::CpuLoadGovernorConfig::default(),
     }
 }
 
@@ -241,6 +236,11 @@ pub fn app_detection_loop(
     let mut last_mode = String::new();
     let mut last_screen_state = true; 
     
+    // 状态机变量：用于无阻塞防抖
+    let mut pending_package = String::new();
+    let mut pending_pid = 0;
+    let mut debounce_start = Instant::now();
+    
     loop {
         let force_refresh = force_refresh_arc.swap(false, Ordering::SeqCst);
         let current_screen_state = { *screen_state_arc.lock().unwrap() };
@@ -248,12 +248,9 @@ pub fn app_detection_loop(
         if current_screen_state != last_screen_state {
             info!("{}", t_with_args("app-detect-screen-changed", &fluent_args!("old" => last_screen_state.to_string(), "new" => current_screen_state.to_string())));
             last_screen_state = current_screen_state;
-            
             if current_screen_state {
-                // 亮屏瞬间，立即清空记录，迫使下方的逻辑立即重新检测包名并推送模式
-                last_package = String::new();
-                // 稍微等待一下系统完全唤醒
-                //thread::sleep(Duration::from_millis(500));
+                last_package.clear();
+                pending_package.clear();
             }
         }
 
@@ -262,65 +259,56 @@ pub fn app_detection_loop(
             continue;
         }
                 
-        // 克隆一份当前的排除列表（避免在 I/O 操作期间一直持有配置锁）
-        let ignored_apps = config_arc.lock().unwrap().ignored_apps.clone();
-        
-        // 将其传递给检测函数
-        let detection_result = get_focused_app_from_cgroup(&ignored_apps);
-        let (current_package, current_pid) = match detection_result {
-            Ok((pkg, pid)) => (pkg, pid),
-            Err(_) => (last_package.clone(), 0), 
-        };
+        // 合并锁获取：一次拿完所有需要的数据
+        let config_snapshot = config_arc.lock().unwrap().clone();
+        let ignored_apps = config_snapshot.ignored_apps.clone();
 
-        let (current_package, current_pid) = if current_package != last_package 
-            && !last_package.is_empty() 
-            && !current_package.is_empty() 
-        {
-            // 检测到变化，等待 500ms 后重新确认
-            thread::sleep(Duration::from_millis(500));
-            // 防抖逻辑也需要传入该列表
-            match get_focused_app_from_cgroup(&ignored_apps) {
-                Ok((confirmed_pkg, confirmed_pid)) => {
-                    if confirmed_pkg == last_package {
-                        // 包名变回去了，说明是瞬态切换（小窗操作），忽略
-                        debug!("App switch debounced: {} → {} → {} (transient, ignored)",
-                            last_package, current_package, confirmed_pkg);
-                        (last_package.clone(), 0) // 保持不变，不触发下方的模式切换逻辑
-                    } else {
-                        // 确认是真正的应用切换
-                        (confirmed_pkg, confirmed_pid)
-                    }
-                }
-                Err(_) => (current_package, current_pid),
+        let (detected_pkg, detected_pid) = get_focused_app_from_cgroup(&ignored_apps)
+            .unwrap_or_else(|_| (last_package.clone(), get_current_pid()));
+
+        let mut final_pkg = last_package.clone();
+        let mut final_pid = get_current_pid();
+
+        // 无阻塞防抖逻辑
+        if detected_pkg != last_package && !detected_pkg.is_empty() {
+            if detected_pkg != pending_package {
+                pending_package = detected_pkg.clone();
+                pending_pid = detected_pid;
+                debounce_start = Instant::now();
+            } else if debounce_start.elapsed() >= Duration::from_millis(500) {
+                final_pkg = pending_package.clone();
+                final_pid = pending_pid;
+                pending_package.clear();
             }
         } else {
-            (current_package, current_pid)
-        };
+            pending_package.clear();
+        }
 
         let current_temp = if !temp_sensor_path.is_empty() {
             utils::read_f64_from_file(&temp_sensor_path).unwrap_or(0.0) / 1000.0
         } else { 0.0 };
-
         
-        if last_package != current_package || force_refresh {
-            if !current_package.is_empty() {
-                set_current_package(&current_package, current_pid);
-                let new_mode = determine_mode(&config_arc.lock().unwrap(), &current_package);
+        if last_package != final_pkg || force_refresh {
+            if !final_pkg.is_empty() {
+                set_current_package(&final_pkg, final_pid);
+                // 使用已获取的 config_snapshot，不再重复加锁
+                let new_mode = determine_mode(&config_snapshot, &final_pkg);
 
                 if last_mode != new_mode || force_refresh {
-                    info!("{}", t_with_args("app-detect-mode-change-pkg", &fluent_args!("old" => last_mode.clone(), "new" => new_mode.as_str(), "pkg" => current_package.as_str())));
+                    info!("{}", t_with_args("app-detect-mode-change-pkg", &fluent_args!("old" => last_mode.clone(), "new" => new_mode.as_str(), "pkg" => final_pkg.as_str())));
+                    // ModeChange 事件现在携带 pid 字段
                     let _ = tx.send(DaemonEvent::ModeChange {
-                        package_name: current_package.clone(),
+                        package_name: final_pkg.clone(),
+                        pid: final_pid,
                         mode: new_mode.clone(),
                         temperature: current_temp,
                     });
                     last_mode = new_mode;
                 }
-                last_package = current_package;
+                last_package = final_pkg;
             }
         }
 
-        // 正常的检测周期 (3秒)
-        thread::sleep(Duration::from_millis(3000));
+        thread::sleep(Duration::from_millis(1500));
     }
 }

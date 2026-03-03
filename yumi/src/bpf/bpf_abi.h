@@ -42,3 +42,19 @@ enum {
     BPF_MAP_TYPE_ARRAY = 2,
     BPF_MAP_TYPE_PERF_EVENT_ARRAY = 4,
 };
+
+// Map 更新标志位
+#ifndef BPF_ANY
+#define BPF_ANY 0
+#define BPF_NOEXIST 1
+#define BPF_EXIST 2
+#endif
+
+// Map 类型常数
+#ifndef BPF_MAP_TYPE_PERCPU_ARRAY
+#define BPF_MAP_TYPE_PERCPU_ARRAY 6
+#endif
+
+// 获取当前运行 CPU 核心号的辅助函数
+// 内核系统调用号为 8 (BPF_FUNC_get_smp_processor_id)
+static __u32 (*bpf_get_smp_processor_id)(void) = (void *)8;

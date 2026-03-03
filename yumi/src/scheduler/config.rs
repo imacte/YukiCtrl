@@ -163,18 +163,6 @@ impl Default for UclampSettings {
 }
 
 #[derive(Debug, Deserialize, Default, Clone)]
-pub struct BusDcvs {
-    #[serde(rename = "CPUllccmin")]
-    pub cpullccmin: String,
-    #[serde(rename = "CPUllccmax")]
-    pub cpullccmax: String,
-    #[serde(rename = "CPUddrmin")]
-    pub cpuddrmin: String,
-    #[serde(rename = "CPUddrmax")]
-    pub cpuddrmax: String,
-}
-
-#[derive(Debug, Deserialize, Default, Clone)]
 #[serde(rename_all = "PascalCase")]
 pub struct Other {
     #[serde(rename = "ufsClkGate")]
@@ -190,8 +178,6 @@ pub struct Mode {
     pub freq: FreqSettings,
     #[serde(default)]
     pub uclamp: UclampSettings,
-    #[serde(default, rename = "Bus_dcvs")]
-    pub bus_dcvs: BusDcvs,
     #[serde(default)]
     pub govsets: HashMap<String, HashMap<String, HashMap<String, String>>>,
     #[serde(default)]

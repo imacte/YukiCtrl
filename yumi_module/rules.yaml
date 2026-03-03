@@ -1,7 +1,3 @@
-# ═══════════════════════════════════════════════════════════════
-#  FAS Rules 配置示例
-# ═══════════════════════════════════════════════════════════════
-
 yumi_scheduler: true
 dynamic_enabled: true
 global_mode: "balance"
@@ -9,62 +5,167 @@ global_mode: "balance"
 app_modes:
   com.miHoYo.GenshinImpact: "fas"
   com.tencent.tmgp.sgame: "fas"
+  com.tencent.tmgp.speedmobile: "fas"
 
 ignored_apps:
   - com.android.systemui
 
+# 全局 CPU 负载感知调频器
+# 对所有非 FAS 模式的前台应用生效
+# 进入 FAS 模式时自动让位，退出 FAS 后自动恢复
+cpu_load_governor:
+  # 总开关 (true/false)
+  enabled: true
+
+  # ---- 触发阈值 ----
+  # 核心利用率超过此值时触发升频 (0.0~1.0)
+  up_threshold: 0.80
+  # 核心利用率低于此值时开始降频 (0.0~1.0)
+  down_threshold: 0.30
+
+  # ---- 降频速率限制 ----
+  # 连续观测到低负载 N 个 tick 后才开始降频 (每 tick ≈ 200ms)
+  # 值越大越不容易误降频，但响应慢；推荐 3~8
+  down_rate_limit_ticks: 5
+
+  # ---- 频率范围 ----
+  # 最低性能比例 (0.0~1.0)，越低越省电，但响应延迟越大
+  perf_floor: 0.15
+  # 最高性能比例 (0.0~1.0)，1.0 = 允许拉满
+  perf_ceil: 0.95
+  # 初始性能值 (模式切换时的起始点)
+  perf_init: 0.40
+
+  # ---- 平滑系数 ----
+  # 升频 EMA 系数 (越大越激进，推荐 0.3~0.6)
+  smoothing_up: 0.45
+  # 降频 EMA 系数 (越小越平滑，推荐 0.10~0.25)
+  smoothing_down: 0.15
+
+  # ---- 余量系数 ----
+  # target_perf = 实际利用率 × headroom_factor
+  # 1.0 = 刚好跟随负载；1.25 = 预留 25% 余量避免卡顿
+  headroom_factor: 1.25
+
 fas_rules:
-  # ── 基础 ──
+  # ── 基础与齿轮 (全局默认) ──
   fps_gears: [30.0, 60.0, 90.0, 120.0, 144.0]
-  fps_margin: "3"
+  fps_margin: 3.0
 
-  # ════════════════════════════════════════════════════════════
-  #  PID 控制器基线系数
-  # ════════════════════════════════════════════════════════════
+  # ── 独立游戏 FAS 配置 ──
+  # per_app_profiles 下的每个游戏必须缩进到其内部
+  per_app_profiles:
+    "com.miHoYo.GenshinImpact":
+      fps_gears: [30, 60]        # 该游戏全局可用档位
+      fps_margin: 4.0             # 该游戏默认 margin
+
+      loading:                    # 加载动画场景（由连续重帧自动触发）
+        fps_gears: [30]           # 加载时只保留 30fps 档
+        fps_margin: 8.0           # 放宽 margin 节电
+        perf_floor: 0.30
+        perf_ceil: 0.60
+
+      lobby:                      # 大厅/菜单场景（CPU 负载低于阈值）
+        fps_gears: [30, 60]
+        fps_margin: 5.0
+        perf_ceil: 0.75
+
+      ingame:                     # 对局中场景（CPU 负载高于阈值）
+        fps_gears: [30, 60]
+        fps_margin: 3.0
+        perf_init: 0.55           # 进入对局时重置到此 perf
+
+      ingame_cpu_threshold: 0.45  # 大厅→对局判定阈值
+      scene_debounce_frames: 90   # 场景切换防抖帧数
+
+    "com.tencent.tmgp.pubgmhd":
+      fps_gears: [60, 120, 144]        # 该游戏全局可用档位
+      fps_margin: 4.0             # 该游戏默认 margin
+
+      loading:                    # 加载动画场景（由连续重帧自动触发）
+        fps_gears: [30, 60]           # 加载时只保留 30fps 档
+        fps_margin: 8.0           # 放宽 margin 节电
+        perf_floor: 0.30
+        perf_ceil: 0.60
+
+      lobby:                      # 大厅/菜单场景（CPU 负载低于阈值）
+        fps_gears: [30, 60]
+        fps_margin: 5.0
+        perf_ceil: 0.75
+
+      ingame:                     # 对局中场景（CPU 负载高于阈值）
+        fps_gears: [144]
+        fps_margin: 3.0
+        perf_init: 0.55           # 进入对局时重置到此 perf
+
+      ingame_cpu_threshold: 0.45  # 大厅→对局判定阈值
+      scene_debounce_frames: 144   # 场景切换防抖帧数
+
+    "com.tencent.tmgp.speedmobile":
+      fps_gears: [60, 120, 144]        # 该游戏全局可用档位
+      fps_margin: 4.0             # 该游戏默认 margin
+
+      loading:                    # 加载动画场景（由连续重帧自动触发）
+        fps_gears: [30, 60]           # 加载时只保留 30fps 档
+        fps_margin: 8.0           # 放宽 margin 节电
+        perf_floor: 0.30
+        perf_ceil: 0.60
+
+      lobby:                      # 大厅/菜单场景（CPU 负载低于阈值）
+        fps_gears: [30, 60]
+        fps_margin: 5.0
+        perf_ceil: 0.75
+
+      ingame:                     # 对局中场景（CPU 负载高于阈值）
+        fps_gears: [120, 144]
+        fps_margin: 3.0
+        perf_init: 0.55           # 进入对局时重置到此 perf
+
+      ingame_cpu_threshold: 0.45  # 大厅→对局判定阈值
+      scene_debounce_frames: 144   # 场景切换防抖帧数
+
+    com.tencent.tmgp.sgame:
+      fps_gears: [60, 120, 144]        # 该游戏全局可用档位
+      fps_margin: 4.0             # 该游戏默认 margin
+
+      loading:                    # 加载动画场景（由连续重帧自动触发）
+        fps_gears: [30, 60]           # 加载时只保留 30fps 档
+        fps_margin: 8.0           # 放宽 margin 节电
+        perf_floor: 0.30
+        perf_ceil: 0.60
+
+      lobby:                      # 大厅/菜单场景（CPU 负载低于阈值）
+        fps_gears: [30, 60]
+        fps_margin: 5.0
+        perf_ceil: 0.75
+
+      ingame:                     # 对局中场景（CPU 负载高于阈值）
+        fps_gears: [120]
+        fps_margin: 3.0
+        perf_init: 0.55           # 进入对局时重置到此 perf
+
+      ingame_cpu_threshold: 0.45  # 大厅→对局判定阈值
+      scene_debounce_frames: 144   # 场景切换防抖帧数
+
+  # ── PID 控制器核心系数 ──
   pid:
-    kp: 0.060
-    ki: 0.018
-    kd: 0.008
+    kp: 0.035
+    ki: 0.015
+    kd: 0.005
 
-  # ════════════════════════════════════════════════════════════
-  #  自适应 PID 增益调度 (Adaptive Gain Scheduling)
-  #  开启后，调度器会根据掉帧或震荡情况，自动缩放 Kp/Ki/Kd 乘子
-  # ════════════════════════════════════════════════════════════
-  adaptive_pid:
-    enabled: true                   # 是否开启自适应 PID
-    eval_interval: 60               # 评估周期（帧）
-    deficit_streak_threshold: 30    # 连续掉帧多少帧触发 Kp 提升
-    kp_boost_step: 0.15             # 触发掉帧时 Kp 乘子增加量
-    kp_decay_step: 0.03             # 平稳时 Kp 乘子回落步长
-    oscillation_threshold: 6        # 窗口内频率翻转几次视为震荡
-    oscillation_window: 60          # 震荡检测窗口大小
-    kd_boost_step: 0.20             # 震荡时 Kd 乘子（阻尼）增加量
-    kp_osc_reduce_step: 0.08        # 震荡时 Kp 乘子削减量
-    kd_decay_step: 0.05             # 平稳时 Kd 乘子回落步长
-    min_gain_mult: 0.5              # 乘子下限 (即基线系数的 0.5倍)
-    max_gain_mult: 2.5              # 乘子上限 (即基线系数的 2.5倍)
-
-  # ════════════════════════════════════════════════════════════
-  #  集群配置（Capacity-Aware）
-  # ════════════════════════════════════════════════════════════
-  # 是否自动读取内核 EAS cpu_capacity 节点计算权重。
-  # 设为 true 时，将忽略下方的 cluster_profiles，自动适应不同手机！
+  # ── 集群算力感知 ──
   auto_capacity_weight: true
-
-  # 仅当 auto_capacity_weight 为 false 或内核不支持时，使用的 Fallback 静态配置
   cluster_profiles:
     - capacity_weight: 1.0   # 小核
     - capacity_weight: 1.5   # 中核
     - capacity_weight: 2.5   # 大核
     - capacity_weight: 3.5   # 超大核
 
-  # ── 归一化 perf 范围 ──
-  perf_floor: 0.20
+  # ── 归一化性能 (Perf) 范围 ──
+  perf_floor: 0.18
   perf_ceil: 1.0
   perf_init: 0.40
   perf_cold_boot: 0.85
-
-  # ── 频率迟滞 ──
   freq_hysteresis: 0.015
 
   # ── 重帧 / 硬加载 ──
@@ -73,85 +174,41 @@ fas_rules:
   loading_normal_tolerance: 3
   loading_perf_floor: 0.60
   loading_perf_ceiling: 0.70
-  loading_reentry_cooldown: 60
 
-  # ── 加载退出后 ──
+  # ── 加载后保护 ──
   post_loading_ignore_frames: 5
-  post_loading_perf_min: 0.50
-  post_loading_perf_max: 0.80
+  post_loading_perf: 0.65
   post_loading_downgrade_guard: 90
 
-  # ── 持续加载 ──
-  sustained_loading_cycle_threshold: 3
-  sustained_loading_window_ns: 10000000000
-  sustained_post_loading_ignore: 30
-
-  # ── 瞬时误差 ──
-  instant_error_threshold_ms: 4.0
-
-  # ── 软加载 ──
-  soft_loading_fps_ratio: 0.5
-  soft_loading_perf_threshold: 0.70
-  soft_loading_confirm_frames: 30
-  soft_loading_perf_cap: 0.40
-  soft_loading_exit_frames: 45
-  soft_loading_breakthrough_fps_ratio: 0.65
-  soft_loading_breakthrough_window: 15
-  soft_loading_exit_frames_breakthrough: 20
-  soft_loading_probe_interval: 120
-  soft_loading_probe_duration: 15
-  soft_loading_probe_perf_cap: 0.70
-  soft_loading_probe_fps_gain_ratio: 0.3
-  soft_loading_probe_fail_decay_step: 0.10
-  soft_loading_downgrade_check_frames: 45
-  soft_loading_gear_match_tolerance: 8.0
-
-  # ── 应用切换 ──
-  app_switch_gap_ms: 3000.0
-  app_switch_resume_perf: 0.60
-  app_switch_ignore_frames: 8
-
-  # ── 场景过渡 ──
-  scene_transition_cv_threshold: 0.45
-  scene_transition_guard_frames: 40
-  scene_transition_max_continuous: 120
-  scene_transition_fps_floor_ratio: 0.3
-  scene_transition_force_exit_frames: 15
-
-  # ── Jank 冷却 ──
-  jank_cooldown_frames_crit: 15
-  jank_cooldown_frames_heavy: 8
-
-  # ── 降档 ──
+  # ── 齿轮切换与阻尼 ──
+  upgrade_confirm_frames: 60
   downgrade_confirm_frames: 90
+  upgrade_cooldown_after_downgrade: 90
+  gear_dampen_frames: 60
+
+  # ── 降档紧急提频 (Boost) ──
   downgrade_boost_perf_inc: 0.15
   downgrade_boost_duration: 45
-  downgrade_proximity_ratio: 0.92
-  upgrade_cooldown_after_downgrade: 90
-  stable_forgive_frames: 900
 
-  # ── 快速衰减 ──
+  # ── 连续稳态快速衰减 (省电核心) ──
   fast_decay_frame_threshold: 60
   fast_decay_perf_threshold: 0.65
   fast_decay_max_step: 0.030
   fast_decay_min_step: 0.005
-  fast_decay_post_jank_suppress: 120
 
-  # ── deficit 抑制 ──
-  deficit_suppress_ms: 0.3
+  # ── Jank 卡顿保护冷却 ──
+  jank_cooldown_frames: 10
 
-  # ── Mismatch 容忍与对抗 ──
-  mismatch_lock_threshold: 12
-  mismatch_reapply_skip_cycles: 5
-
-  # ── PID 输出限幅 ──
-  max_inc_damped: 0.07
-  max_inc_normal: 0.12
+  # ── PID 输出限幅 (防过冲) ──
+  max_inc_damped: 0.035
+  max_inc_normal: 0.06
   damped_perf_cap: 0.90
 
-  # ── 频率重应用 ──
+  # ── 应用切换 / 息屏检测 ──
+  app_switch_gap_ms: 3000.0
+  app_switch_resume_perf: 0.60
+
+  # ── 其他底层机制 ──
   freq_force_reapply_interval: 30
   fixed_max_frame_ms: 500.0
-
-  # ── 冷启动 ──
   cold_boot_ms: 3500

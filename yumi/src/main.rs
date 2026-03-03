@@ -19,7 +19,6 @@ mod common;
 mod logger;
 mod monitor;
 mod scheduler;
-pub mod fas;
 pub mod i18n;
 pub mod utils;
 use std::sync::mpsc;

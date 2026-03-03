@@ -27,6 +27,7 @@ pub mod config;
 pub mod app_detect;
 pub mod screen_detect;
 pub mod fps_monitor;
+pub mod cpu_monitor;
 
 use crate::common::DaemonEvent;
 use crate::i18n::t;
@@ -101,7 +102,23 @@ pub fn start_monitor(tx: Sender<DaemonEvent>) -> Result<(), Box<dyn Error>> {
             }
         })?;
 
-    // 6. 启动应用检测主循环 (阻塞)
+    // 6. 启动 eBPF CPU 负载监控线程
+    let tx_cpu = tx.clone();
+    thread::Builder::new()
+        .name("cpu_monitor_ebpf".to_string())
+        .spawn(move || {
+            if let Ok(rt) = tokio::runtime::Runtime::new() {
+                rt.block_on(async {
+                    if let Err(e) = cpu_monitor::start_cpu_loop(tx_cpu).await {
+                        error!("CPU Monitor crashed: {}", e);
+                    }
+                });
+            } else {
+                error!("Failed to create Tokio runtime for CPU monitor");
+            }
+        })?;
+
+    // 7. 启动应用检测主循环 (阻塞)
     app_detect::app_detection_loop(
         config_arc,
         screen_state_clone_for_app_detect,

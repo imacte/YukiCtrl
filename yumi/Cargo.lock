@@ -1404,6 +1404,7 @@ dependencies = [
  "itoa",
  "kobject-uevent",
  "lazy_static",
+ "libc",
  "log",
  "log4rs",
  "netlink-sys",

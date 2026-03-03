@@ -25,556 +25,392 @@ use log::warn;
 use std::path::PathBuf;
 use crate::common;
 
-pub fn get_rules_path() -> PathBuf {
-    common::get_module_root().join("rules.yaml")
-}
+pub fn get_rules_path() -> PathBuf { common::get_module_root().join("rules.yaml") }
+pub fn get_boot_scripts_path() -> PathBuf { common::get_module_root().join("boot_scripts.yaml") }
+pub fn get_scripts_dir() -> PathBuf { common::get_module_root().join("scripts") }
 
-pub fn get_boot_scripts_path() -> PathBuf {
-    common::get_module_root().join("boot_scripts.yaml")
-}
+// ════════════════════════════════════════════════════════════════
+//  PID 系数
+// ════════════════════════════════════════════════════════════════
 
-pub fn get_scripts_dir() -> PathBuf {
-    common::get_module_root().join("scripts")
-}
-
-/// PID 控制器的三个核心参数。
-/// - `kp`：比例项（Proportional）— 响应瞬时误差（inst_err）
-/// - `ki`：积分项（Integral）    — 修正长期趋势偏差（ema_err 的累积）
-/// - `kd`：微分项（Derivative）  — 阻尼 / 防过冲（ema_err 的变化率）
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PidCoefficients {
-    #[serde(default = "default_kp")]
-    pub kp: f32,
-    #[serde(default = "default_ki")]
-    pub ki: f32,
-    #[serde(default = "default_kd")]
-    pub kd: f32,
+    #[serde(default = "default_kp")]  pub kp: f32,
+    #[serde(default = "default_ki")]  pub ki: f32,
+    #[serde(default = "default_kd")]  pub kd: f32,
 }
-
-fn default_kp() -> f32 { 0.045 }
-fn default_ki() -> f32 { 0.012 }
-fn default_kd() -> f32 { 0.008 }
-
+fn default_kp() -> f32 { 0.050 }
+fn default_ki() -> f32 { 0.010 }
+fn default_kd() -> f32 { 0.006 }
 impl Default for PidCoefficients {
-    fn default() -> Self {
-        Self {
-            kp: default_kp(),
-            ki: default_ki(),
-            kd: default_kd(),
-        }
-    }
+    fn default() -> Self { Self { kp: default_kp(), ki: default_ki(), kd: default_kd() } }
 }
+
+// ════════════════════════════════════════════════════════════════
+//  Cluster 配置
+// ════════════════════════════════════════════════════════════════
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ClusterProfile {
-    /// IPC 容量权重 / 频率曲率指数（小核=1.0 为基准）
     #[serde(default = "default_capacity_weight")]
     pub capacity_weight: f32,
 }
-
 fn default_capacity_weight() -> f32 { 1.0 }
-
 impl Default for ClusterProfile {
-    fn default() -> Self {
-        Self {
-            capacity_weight: 1.0,
-        }
-    }
+    fn default() -> Self { Self { capacity_weight: 1.0 } }
 }
-
-/// 预设的集群配置模板。
-/// 索引 0=小核, 1=中核, 2=大核, 3=超大核。
 pub fn default_cluster_profiles() -> Vec<ClusterProfile> {
     vec![
-        // 小核 (e.g. Cortex-A510): 线性跟随
         ClusterProfile { capacity_weight: 1.0 },
-        // 中核 (e.g. Cortex-A715): 略保守
         ClusterProfile { capacity_weight: 1.5 },
-        // 大核 (e.g. Cortex-A720): 明显保守
         ClusterProfile { capacity_weight: 2.5 },
-        // 超大核 (e.g. Cortex-X4): 极度保守
         ClusterProfile { capacity_weight: 3.5 },
     ]
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct AdaptivePidConfig {
-    /// 是否启用自适应增益调度
-    #[serde(default = "default_adaptive_pid_enabled")]
-    pub enabled: bool,
+// ════════════════════════════════════════════════════════════════
+//  Per-App 场景化配置 (新增)
+// ════════════════════════════════════════════════════════════════
 
-    /// 每隔多少帧执行一次增益评估
-    #[serde(default = "default_adaptive_eval_interval")]
-    pub eval_interval: u32,
-
-    // ── deficit streak → boost Kp ──
-
-    /// 连续 deficit 帧达到此阈值时触发 Kp 提升
-    #[serde(default = "default_deficit_streak_threshold")]
-    pub deficit_streak_threshold: u32,
-
-    /// deficit 触发时 Kp 乘子的增量（叠加到 kp_gain_mult 上）
-    #[serde(default = "default_kp_boost_step")]
-    pub kp_boost_step: f32,
-
-    /// surplus 恢复时 Kp 乘子每次评估的衰减步长
-    #[serde(default = "default_kp_decay_step")]
-    pub kp_decay_step: f32,
-
-    // ── oscillation → boost Kd, reduce Kp ──
-
-    /// 频率翻转（升→降→升）次数达到此阈值视为振荡
-    #[serde(default = "default_oscillation_threshold")]
-    pub oscillation_threshold: u32,
-
-    /// 振荡检测窗口帧数
-    #[serde(default = "default_oscillation_window")]
-    pub oscillation_window: u32,
-
-    /// 振荡时 Kd 乘子增量
-    #[serde(default = "default_kd_boost_step")]
-    pub kd_boost_step: f32,
-
-    /// 振荡时 Kp 乘子削减步长
-    #[serde(default = "default_kp_osc_reduce_step")]
-    pub kp_osc_reduce_step: f32,
-
-    /// 无振荡时 Kd 乘子衰减步长
-    #[serde(default = "default_kd_decay_step")]
-    pub kd_decay_step: f32,
-
-    // ── 乘子边界 ──
-
-    /// 增益乘子下限
-    #[serde(default = "default_min_gain_mult")]
-    pub min_gain_mult: f32,
-
-    /// 增益乘子上限
-    #[serde(default = "default_max_gain_mult")]
-    pub max_gain_mult: f32,
+/// 单个场景的覆写参数（Option = 未设置则回退到全局值）
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct AppSceneConfig {
+    /// 该场景下可用的帧率档位
+    pub fps_gears: Option<Vec<f32>>,
+    /// 该场景下的帧率余量
+    pub fps_margin: Option<f32>,
+    /// 该场景下的性能地板
+    pub perf_floor: Option<f32>,
+    /// 该场景下的性能天花板
+    pub perf_ceil: Option<f32>,
+    /// 该场景的初始性能指数
+    pub perf_init: Option<f32>,
 }
 
-fn default_adaptive_pid_enabled() -> bool { true }
-fn default_adaptive_eval_interval() -> u32 { 60 }
-fn default_deficit_streak_threshold() -> u32 { 30 }
-fn default_kp_boost_step() -> f32 { 0.15 }
-fn default_kp_decay_step() -> f32 { 0.03 }
-fn default_oscillation_threshold() -> u32 { 6 }
-fn default_oscillation_window() -> u32 { 60 }
-fn default_kd_boost_step() -> f32 { 0.20 }
-fn default_kp_osc_reduce_step() -> f32 { 0.08 }
-fn default_kd_decay_step() -> f32 { 0.05 }
-fn default_min_gain_mult() -> f32 { 0.5 }
-fn default_max_gain_mult() -> f32 { 2.5 }
+/// 每个游戏的完整配置档案
+///
+/// YAML 示例:
+/// ```yaml
+/// per_app_profiles:
+///   "com.miHoYo.GenshinImpact":
+///     fps_gears: [30, 60]
+///     fps_margin: 4.0
+///     loading:
+///       fps_gears: [30]
+///       fps_margin: 8.0
+///       perf_floor: 0.30
+///       perf_ceil: 0.60
+///     lobby:
+///       fps_gears: [30, 60]
+///       fps_margin: 5.0
+///       perf_ceil: 0.75
+///     ingame:
+///       fps_gears: [30, 60]
+///       fps_margin: 3.0
+///     ingame_cpu_threshold: 0.45
+/// ```
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct PerAppProfile {
+    /// 该应用的默认帧率档位（覆盖全局 fps_gears）
+    #[serde(default)]
+    pub fps_gears: Option<Vec<f32>>,
 
-impl Default for AdaptivePidConfig {
+    /// 该应用的默认帧率余量（覆盖全局 fps_margin）
+    #[serde(default)]
+    pub fps_margin: Option<f32>,
+
+    /// 加载动画场景 — 由连续重帧触发
+    #[serde(default)]
+    pub loading: Option<AppSceneConfig>,
+
+    /// 大厅/菜单场景 — CPU 负载低于 ingame_cpu_threshold
+    #[serde(default)]
+    pub lobby: Option<AppSceneConfig>,
+
+    /// 对局中场景 — CPU 负载高于 ingame_cpu_threshold
+    #[serde(default)]
+    pub ingame: Option<AppSceneConfig>,
+
+    /// 大厅→对局 判定的前台最重线程 CPU 利用率阈值 (0.0~1.0)
+    #[serde(default = "d_scene_cpu_thresh")]
+    pub ingame_cpu_threshold: f32,
+
+    /// 场景切换后的防抖帧数（防止频繁切换）
+    #[serde(default = "d_scene_debounce")]
+    pub scene_debounce_frames: u32,
+}
+
+fn d_scene_cpu_thresh() -> f32 { 0.40 }
+fn d_scene_debounce() -> u32 { 90 }
+
+// ════════════════════════════════════════════════════════════════
+//  CPU Load Governor 配置
+// ════════════════════════════════════════════════════════════════
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CpuLoadGovernorConfig {
+    /// 是否启用负载调频
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// 升频阈值（核心利用率超过此值触发升频）
+    #[serde(default = "d_clg_up_thresh")]
+    pub up_threshold: f32,
+
+    /// 降频阈值（核心利用率低于此值允许降频）
+    #[serde(default = "d_clg_down_thresh")]
+    pub down_threshold: f32,
+
+    /// 升频平滑系数 (0.0~1.0, 越大响应越快)
+    #[serde(default = "d_clg_smooth_up")]
+    pub smoothing_up: f32,
+
+    /// 降频平滑系数
+    #[serde(default = "d_clg_smooth_down")]
+    pub smoothing_down: f32,
+
+    /// 降频 rate limit（连续多少个 tick 后才允许降频）
+    #[serde(default = "d_clg_down_rate")]
+    pub down_rate_limit_ticks: u32,
+
+    /// 余量因子：target_perf = util × headroom_factor
+    #[serde(default = "d_clg_headroom")]
+    pub headroom_factor: f32,
+
+    /// 性能地板
+    #[serde(default = "d_clg_floor")]
+    pub perf_floor: f32,
+
+    /// 性能天花板
+    #[serde(default = "d_clg_ceil")]
+    pub perf_ceil: f32,
+
+    /// 初始性能指数
+    #[serde(default = "d_clg_init")]
+    pub perf_init: f32,
+}
+
+fn d_clg_up_thresh() -> f32 { 0.80 }
+fn d_clg_down_thresh() -> f32 { 0.50 }
+fn d_clg_smooth_up() -> f32 { 0.60 }
+fn d_clg_smooth_down() -> f32 { 0.30 }
+fn d_clg_down_rate() -> u32 { 3 }
+fn d_clg_headroom() -> f32 { 1.25 }
+fn d_clg_floor() -> f32 { 0.15 }
+fn d_clg_ceil() -> f32 { 1.0 }
+fn d_clg_init() -> f32 { 0.50 }
+
+impl Default for CpuLoadGovernorConfig {
     fn default() -> Self {
         Self {
-            enabled: default_adaptive_pid_enabled(),
-            eval_interval: default_adaptive_eval_interval(),
-            deficit_streak_threshold: default_deficit_streak_threshold(),
-            kp_boost_step: default_kp_boost_step(),
-            kp_decay_step: default_kp_decay_step(),
-            oscillation_threshold: default_oscillation_threshold(),
-            oscillation_window: default_oscillation_window(),
-            kd_boost_step: default_kd_boost_step(),
-            kp_osc_reduce_step: default_kp_osc_reduce_step(),
-            kd_decay_step: default_kd_decay_step(),
-            min_gain_mult: default_min_gain_mult(),
-            max_gain_mult: default_max_gain_mult(),
+            enabled: false,
+            up_threshold: d_clg_up_thresh(),
+            down_threshold: d_clg_down_thresh(),
+            smoothing_up: d_clg_smooth_up(),
+            smoothing_down: d_clg_smooth_down(),
+            down_rate_limit_ticks: d_clg_down_rate(),
+            headroom_factor: d_clg_headroom(),
+            perf_floor: d_clg_floor(),
+            perf_ceil: d_clg_ceil(),
+            perf_init: d_clg_init(),
         }
     }
 }
 
+// ════════════════════════════════════════════════════════════════
+//  FAS Rules 配置
+// ════════════════════════════════════════════════════════════════
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct FasRulesConfig {
-    // ── 基础 ──
-    #[serde(default = "default_fps_gears")]
-    pub fps_gears: Vec<f32>,
-    #[serde(default = "default_fps_margin")]
-    pub fps_margin: String,
+    #[serde(default = "default_fps_gears")]       pub fps_gears: Vec<f32>,
+    #[serde(default = "default_fps_margin")]       pub fps_margin: String,
+    #[serde(default)]                              pub pid: PidCoefficients,
+    #[serde(default = "default_cluster_profiles")] pub cluster_profiles: Vec<ClusterProfile>,
+    #[serde(default = "d_auto_cap")]               pub auto_capacity_weight: bool,
 
-    // ── PID 控制器 ──
+    #[serde(default = "d_perf_floor")]   pub perf_floor: f32,
+    #[serde(default = "d_perf_ceil")]    pub perf_ceil: f32,
+    #[serde(default = "d_perf_init")]    pub perf_init: f32,
+    #[serde(default = "d_perf_cold")]    pub perf_cold_boot: f32,
+    #[serde(default = "d_hysteresis")]   pub freq_hysteresis: f32,
+
+    #[serde(default = "d_heavy_ms")]     pub heavy_frame_threshold_ms: f32,
+    #[serde(default = "d_load_ms")]      pub loading_cumulative_ms: f32,
+    #[serde(default = "d_load_tol")]     pub loading_normal_tolerance: u32,
+    #[serde(default = "d_load_pf")]      pub loading_perf_floor: f32,
+    #[serde(default = "d_load_pc")]      pub loading_perf_ceiling: f32,
+
+    #[serde(default = "d_post_ign")]     pub post_loading_ignore_frames: u32,
+    #[serde(default = "d_post_perf")]    pub post_loading_perf: f32,
+    #[serde(default = "d_post_guard")]   pub post_loading_downgrade_guard: u32,
+
+    #[serde(default = "d_up_confirm")]   pub upgrade_confirm_frames: u32,
+    #[serde(default = "d_dn_confirm")]   pub downgrade_confirm_frames: u32,
+    #[serde(default = "d_up_cd")]        pub upgrade_cooldown_after_downgrade: u32,
+    #[serde(default = "d_dampen")]       pub gear_dampen_frames: u32,
+
+    #[serde(default = "d_boost_inc")]    pub downgrade_boost_perf_inc: f32,
+    #[serde(default = "d_boost_dur")]    pub downgrade_boost_duration: u32,
+
+    #[serde(default = "d_fd_thresh")]    pub fast_decay_frame_threshold: u32,
+    #[serde(default = "d_fd_perf")]      pub fast_decay_perf_threshold: f32,
+    #[serde(default = "d_fd_max")]       pub fast_decay_max_step: f32,
+    #[serde(default = "d_fd_min")]       pub fast_decay_min_step: f32,
+
+    #[serde(default = "d_jank_cd")]      pub jank_cooldown_frames: u32,
+
+    #[serde(default = "d_max_inc_d")]    pub max_inc_damped: f32,
+    #[serde(default = "d_max_inc_n")]    pub max_inc_normal: f32,
+    #[serde(default = "d_damped_cap")]   pub damped_perf_cap: f32,
+
+    #[serde(default = "d_switch_ms")]    pub app_switch_gap_ms: f32,
+    #[serde(default = "d_switch_perf")]  pub app_switch_resume_perf: f32,
+
+    #[serde(default = "d_force_int")]    pub freq_force_reapply_interval: u32,
+    #[serde(default = "d_max_frame")]    pub fixed_max_frame_ms: f32,
+    #[serde(default = "d_cold_ms")]      pub cold_boot_ms: u64,
+
+    #[serde(default = "d_verify_interval")]
+    pub verify_freq_interval_secs: u32,
+
+    /// 【新】每应用场景化配置。key = 包名
+    /// 替代旧的 per_app_margins（向后兼容：旧配置在加载时自动迁移）
     #[serde(default)]
-    pub pid: PidCoefficients,
+    pub per_app_profiles: HashMap<String, PerAppProfile>,
 
-    // ── 集群配置 ──
-    #[serde(default = "default_cluster_profiles")]
-    pub cluster_profiles: Vec<ClusterProfile>,
-
-    /// 是否自动从内核 cpu_capacity 节点探测算力分布并计算 capacity_weight。
-    /// 开启后忽略 cluster_profiles 中的手动 weight 值。
-    #[serde(default = "default_auto_capacity_weight")]
-    pub auto_capacity_weight: bool,
-
-    // ── 自适应 PID ──
+    /// 【兼容】旧的 per_app_margins 字段，加载后自动迁移到 per_app_profiles
     #[serde(default)]
-    pub adaptive_pid: AdaptivePidConfig,
+    pub per_app_margins: HashMap<String, f32>,
 
-    // ── 归一化 perf 范围（逻辑上 0.0~1.0，这里是初始值/下限/上限） ──
-    /// perf 归一化下限（不再是 150.0 这种绝对值，而是 0.0~1.0）
-    #[serde(default = "default_perf_floor_norm")]
-    pub perf_floor: f32,
-    /// perf 归一化上限
-    #[serde(default = "default_perf_ceil_norm")]
-    pub perf_ceil: f32,
-    /// 控制器初始化时的 perf
-    #[serde(default = "default_perf_init")]
-    pub perf_init: f32,
-    /// 冷启动期间的 perf
-    #[serde(default = "default_perf_cold_boot")]
-    pub perf_cold_boot: f32,
+    /// 温度降频阈值（℃），0 = 禁用
+    #[serde(default = "d_temp_thresh")]
+    pub core_temp_threshold: f64,
 
-    // ── 频率迟滞 ──
-    #[serde(default = "default_hysteresis")]
-    pub freq_hysteresis: f32,
+    /// 温度降频时的最低 perf
+    #[serde(default = "d_temp_perf")]
+    pub core_temp_throttle_perf: f32,
 
-    // ── 重帧 / 硬加载 ──
-    #[serde(default = "default_heavy_frame_ms")]
-    pub heavy_frame_threshold_ms: f32,
-    #[serde(default = "default_loading_cumulative_ms")]
-    pub loading_cumulative_ms: f32,
-    #[serde(default = "default_loading_normal_tolerance")]
-    pub loading_normal_tolerance: u32,
-    #[serde(default = "default_loading_perf_floor")]
-    pub loading_perf_floor: f32,
-    #[serde(default = "default_loading_perf_ceiling")]
-    pub loading_perf_ceiling: f32,
-    #[serde(default = "default_loading_reentry_cooldown")]
-    pub loading_reentry_cooldown: u32,
+    /// 【新】CPU 负载辅助：前台线程利用率封顶的除数 (越小越激进)
+    #[serde(default = "d_util_cap_divisor")]
+    pub util_cap_divisor: f32,
 
-    // ── 加载退出后 ──
-    #[serde(default = "default_post_loading_ignore")]
-    pub post_loading_ignore_frames: u32,
-    #[serde(default = "default_post_loading_perf_min")]
-    pub post_loading_perf_min: f32,
-    #[serde(default = "default_post_loading_perf_max")]
-    pub post_loading_perf_max: f32,
-    #[serde(default = "default_post_loading_downgrade_guard")]
-    pub post_loading_downgrade_guard: u32,
-
-    // ── 持续加载 ──
-    #[serde(default = "default_sustained_loading_cycle_threshold")]
-    pub sustained_loading_cycle_threshold: u32,
-    #[serde(default = "default_sustained_loading_window_ns")]
-    pub sustained_loading_window_ns: u64,
-    #[serde(default = "default_sustained_post_loading_ignore")]
-    pub sustained_post_loading_ignore: u32,
-
-    // ── 瞬时误差 ──
-    #[serde(default = "default_instant_error_threshold")]
-    pub instant_error_threshold_ms: f32,
-
-    // ── 软加载 ──
-    #[serde(default = "default_soft_loading_fps_ratio")]
-    pub soft_loading_fps_ratio: f32,
-    #[serde(default = "default_soft_loading_perf_threshold")]
-    pub soft_loading_perf_threshold: f32,
-    #[serde(default = "default_soft_loading_confirm_frames")]
-    pub soft_loading_confirm_frames: u32,
-    #[serde(default = "default_soft_loading_perf_cap")]
-    pub soft_loading_perf_cap: f32,
-    #[serde(default = "default_soft_loading_exit_frames")]
-    pub soft_loading_exit_frames: u32,
-    #[serde(default = "default_soft_loading_breakthrough_fps_ratio")]
-    pub soft_loading_breakthrough_fps_ratio: f32,
-    #[serde(default = "default_soft_loading_breakthrough_window")]
-    pub soft_loading_breakthrough_window: usize,
-    #[serde(default = "default_soft_loading_exit_frames_breakthrough")]
-    pub soft_loading_exit_frames_breakthrough: u32,
-    #[serde(default = "default_soft_loading_probe_interval")]
-    pub soft_loading_probe_interval: u32,
-    #[serde(default = "default_soft_loading_probe_duration")]
-    pub soft_loading_probe_duration: u32,
-    #[serde(default = "default_soft_loading_probe_perf_cap")]
-    pub soft_loading_probe_perf_cap: f32,
-    #[serde(default = "default_soft_loading_probe_fps_gain_ratio")]
-    pub soft_loading_probe_fps_gain_ratio: f32,
-    #[serde(default = "default_soft_loading_probe_fail_decay_step")]
-    pub soft_loading_probe_fail_decay_step: f32,
-    #[serde(default = "default_soft_loading_downgrade_check_frames")]
-    pub soft_loading_downgrade_check_frames: u32,
-    #[serde(default = "default_soft_loading_gear_match_tolerance")]
-    pub soft_loading_gear_match_tolerance: f32,
-
-    // ── 应用切换 ──
-    #[serde(default = "default_app_switch_gap_ms")]
-    pub app_switch_gap_ms: f32,
-    #[serde(default = "default_app_switch_resume_perf")]
-    pub app_switch_resume_perf: f32,
-    #[serde(default = "default_app_switch_ignore_frames")]
-    pub app_switch_ignore_frames: u32,
-
-    // ── 场景过渡 ──
-    #[serde(default = "default_scene_transition_cv_threshold")]
-    pub scene_transition_cv_threshold: f32,
-    #[serde(default = "default_scene_transition_guard_frames")]
-    pub scene_transition_guard_frames: u32,
-    #[serde(default = "default_scene_transition_max_continuous")]
-    pub scene_transition_max_continuous: u32,
-    #[serde(default = "default_scene_transition_fps_floor_ratio")]
-    pub scene_transition_fps_floor_ratio: f32,
-    #[serde(default = "default_scene_transition_force_exit_frames")]
-    pub scene_transition_force_exit_frames: u32,
-
-    // ── Jank 冷却 ──
-    #[serde(default = "default_jank_cooldown_crit")]
-    pub jank_cooldown_frames_crit: u32,
-    #[serde(default = "default_jank_cooldown_heavy")]
-    pub jank_cooldown_frames_heavy: u32,
-
-    // ── 降档 ──
-    #[serde(default = "default_downgrade_confirm_frames")]
-    pub downgrade_confirm_frames: u32,
-    #[serde(default = "default_downgrade_boost_perf_inc")]
-    pub downgrade_boost_perf_inc: f32,
-    #[serde(default = "default_downgrade_boost_duration")]
-    pub downgrade_boost_duration: u32,
-    #[serde(default = "default_downgrade_proximity_ratio")]
-    pub downgrade_proximity_ratio: f32,
-    #[serde(default = "default_upgrade_cooldown_after_downgrade")]
-    pub upgrade_cooldown_after_downgrade: u32,
-    #[serde(default = "default_stable_forgive_frames")]
-    pub stable_forgive_frames: u32,
-
-    // ── 快速衰减 ──
-    #[serde(default = "default_fast_decay_frame_threshold")]
-    pub fast_decay_frame_threshold: u32,
-    #[serde(default = "default_fast_decay_perf_threshold")]
-    pub fast_decay_perf_threshold: f32,
-    #[serde(default = "default_fast_decay_max_step")]
-    pub fast_decay_max_step: f32,
-    #[serde(default = "default_fast_decay_min_step")]
-    pub fast_decay_min_step: f32,
-    #[serde(default = "default_fast_decay_post_jank_suppress")]
-    pub fast_decay_post_jank_suppress: u32,
-
-    // ── deficit 抑制 ──
-    #[serde(default = "default_deficit_suppress_ms")]
-    pub deficit_suppress_ms: f32,
-
-    // ── Mismatch ──
-    #[serde(default = "default_mismatch_lock_threshold")]
-    pub mismatch_lock_threshold: u32,
-    #[serde(default = "default_mismatch_reapply_skip_cycles")]
-    pub mismatch_reapply_skip_cycles: u32,
-
-    // ── PID 输出限幅（归一化） ──
-    /// 单帧最大 perf 增量（damped 模式）
-    #[serde(default = "default_max_inc_damped")]
-    pub max_inc_damped: f32,
-    /// 单帧最大 perf 增量（正常模式）
-    #[serde(default = "default_max_inc_normal")]
-    pub max_inc_normal: f32,
-    /// damped 模式下 perf 天花板
-    #[serde(default = "default_damped_perf_cap")]
-    pub damped_perf_cap: f32,
-
-    // ── 频率重应用 ──
-    #[serde(default = "default_freq_force_reapply_interval")]
-    pub freq_force_reapply_interval: u32,
-    #[serde(default = "default_fixed_max_frame_ms")]
-    pub fixed_max_frame_ms: f32,
-
-    // ── 冷启动 ──
-    #[serde(default = "default_cold_boot_ms")]
-    pub cold_boot_ms: u64,
+    /// 【新】CPU 负载辅助：场景检测平滑系数
+    #[serde(default = "d_scene_ema_alpha")]
+    pub scene_ema_alpha: f32,
 }
-
-
-// ── 所有默认值函数 ──
 
 pub fn default_fps_gears() -> Vec<f32> { vec![30.0, 60.0, 90.0, 120.0, 144.0] }
 pub fn default_fps_margin() -> String { "3".to_string() }
+fn d_auto_cap() -> bool { true }
+fn d_perf_floor() -> f32 { 0.18 }
+fn d_perf_ceil() -> f32 { 1.0 }
+fn d_perf_init() -> f32 { 0.40 }
+fn d_perf_cold() -> f32 { 0.85 }
+pub fn d_hysteresis() -> f32 { 0.015 }
+pub fn d_heavy_ms() -> f32 { 150.0 }
+pub fn d_load_ms() -> f32 { 2500.0 }
+fn d_load_tol() -> u32 { 3 }
+fn d_load_pf() -> f32 { 0.60 }
+fn d_load_pc() -> f32 { 0.70 }
+pub fn d_post_ign() -> u32 { 5 }
+pub fn d_post_perf() -> f32 { 0.65 }
+fn d_post_guard() -> u32 { 90 }
+fn d_up_confirm() -> u32 { 60 }
+fn d_dn_confirm() -> u32 { 90 }
+fn d_up_cd() -> u32 { 90 }
+fn d_dampen() -> u32 { 60 }
+fn d_boost_inc() -> f32 { 0.15 }
+fn d_boost_dur() -> u32 { 45 }
+fn d_fd_thresh() -> u32 { 60 }
+fn d_fd_perf() -> f32 { 0.65 }
+fn d_fd_max() -> f32 { 0.030 }
+fn d_fd_min() -> f32 { 0.005 }
+fn d_jank_cd() -> u32 { 10 }
+fn d_max_inc_d() -> f32 { 0.035 }
+fn d_max_inc_n() -> f32 { 0.06 }
+fn d_damped_cap() -> f32 { 0.90 }
+fn d_switch_ms() -> f32 { 3000.0 }
+fn d_switch_perf() -> f32 { 0.60 }
+fn d_force_int() -> u32 { 30 }
+fn d_max_frame() -> f32 { 500.0 }
+fn d_cold_ms() -> u64 { 3500 }
+fn d_verify_interval() -> u32 { 3 }
+fn d_temp_thresh() -> f64 { 0.0 }
+fn d_temp_perf() -> f32 { 0.70 }
+fn d_util_cap_divisor() -> f32 { 0.45 }
+fn d_scene_ema_alpha() -> f32 { 0.15 }
 
-fn default_perf_floor_norm() -> f32 { 0.15 }
-fn default_perf_ceil_norm() -> f32 { 1.0 }
-fn default_perf_init() -> f32 { 0.40 }
-fn default_perf_cold_boot() -> f32 { 0.85 }
-pub fn default_hysteresis() -> f32 { 0.015 }
-fn default_auto_capacity_weight() -> bool { true }
-
-pub fn default_heavy_frame_ms() -> f32 { 150.0 }
-pub fn default_loading_cumulative_ms() -> f32 { 2500.0 }
-fn default_loading_normal_tolerance() -> u32 { 3 }
-fn default_loading_perf_floor() -> f32 { 0.60 }
-fn default_loading_perf_ceiling() -> f32 { 0.70 }
-fn default_loading_reentry_cooldown() -> u32 { 60 }
-
-pub fn default_post_loading_ignore() -> u32 { 5 }
-pub fn default_post_loading_perf_min() -> f32 { 0.50 }
-pub fn default_post_loading_perf_max() -> f32 { 0.80 }
-fn default_post_loading_downgrade_guard() -> u32 { 90 }
-
-fn default_sustained_loading_cycle_threshold() -> u32 { 3 }
-fn default_sustained_loading_window_ns() -> u64 { 10_000_000_000 }
-fn default_sustained_post_loading_ignore() -> u32 { 30 }
-
-pub fn default_instant_error_threshold() -> f32 { 4.0 }
-
-fn default_soft_loading_fps_ratio() -> f32 { 0.5 }
-fn default_soft_loading_perf_threshold() -> f32 { 0.70 }
-fn default_soft_loading_confirm_frames() -> u32 { 30 }
-fn default_soft_loading_perf_cap() -> f32 { 0.40 }
-fn default_soft_loading_exit_frames() -> u32 { 45 }
-fn default_soft_loading_breakthrough_fps_ratio() -> f32 { 0.65 }
-fn default_soft_loading_breakthrough_window() -> usize { 15 }
-fn default_soft_loading_exit_frames_breakthrough() -> u32 { 20 }
-fn default_soft_loading_probe_interval() -> u32 { 120 }
-fn default_soft_loading_probe_duration() -> u32 { 15 }
-fn default_soft_loading_probe_perf_cap() -> f32 { 0.70 }
-fn default_soft_loading_probe_fps_gain_ratio() -> f32 { 0.3 }
-fn default_soft_loading_probe_fail_decay_step() -> f32 { 0.10 }
-fn default_soft_loading_downgrade_check_frames() -> u32 { 45 }
-fn default_soft_loading_gear_match_tolerance() -> f32 { 8.0 }
-
-fn default_app_switch_gap_ms() -> f32 { 3000.0 }
-fn default_app_switch_resume_perf() -> f32 { 0.60 }
-fn default_app_switch_ignore_frames() -> u32 { 8 }
-
-fn default_scene_transition_cv_threshold() -> f32 { 0.45 }
-fn default_scene_transition_guard_frames() -> u32 { 40 }
-fn default_scene_transition_max_continuous() -> u32 { 120 }
-fn default_scene_transition_fps_floor_ratio() -> f32 { 0.3 }
-fn default_scene_transition_force_exit_frames() -> u32 { 15 }
-
-fn default_jank_cooldown_crit() -> u32 { 10 }
-fn default_jank_cooldown_heavy() -> u32 { 5 }
-
-fn default_downgrade_confirm_frames() -> u32 { 90 }
-fn default_downgrade_boost_perf_inc() -> f32 { 0.15 }
-fn default_downgrade_boost_duration() -> u32 { 45 }
-fn default_downgrade_proximity_ratio() -> f32 { 0.92 }
-fn default_upgrade_cooldown_after_downgrade() -> u32 { 90 }
-fn default_stable_forgive_frames() -> u32 { 900 }
-
-fn default_fast_decay_frame_threshold() -> u32 { 60 }
-fn default_fast_decay_perf_threshold() -> f32 { 0.65 }
-fn default_fast_decay_max_step() -> f32 { 0.030 }
-fn default_fast_decay_min_step() -> f32 { 0.005 }
-fn default_fast_decay_post_jank_suppress() -> u32 { 90 }
-
-fn default_deficit_suppress_ms() -> f32 { 0.3 }
-
-fn default_mismatch_lock_threshold() -> u32 { 8 }
-fn default_mismatch_reapply_skip_cycles() -> u32 { 3 }
-
-fn default_max_inc_damped() -> f32 { 0.04 }
-fn default_max_inc_normal() -> f32 { 0.07 }
-fn default_damped_perf_cap() -> f32 { 0.90 }
-
-fn default_freq_force_reapply_interval() -> u32 { 30 }
-fn default_fixed_max_frame_ms() -> f32 { 500.0 }
-fn default_cold_boot_ms() -> u64 { 3500 }
-
+impl FasRulesConfig {
+    /// 将旧的 per_app_margins 迁移到 per_app_profiles
+    pub fn migrate_legacy_margins(&mut self) {
+        for (pkg, margin) in self.per_app_margins.drain() {
+            self.per_app_profiles
+                .entry(pkg)
+                .or_default()
+                .fps_margin = Some(margin);
+        }
+    }
+}
 
 impl Default for FasRulesConfig {
     fn default() -> Self {
         Self {
-            fps_gears: default_fps_gears(),
-            fps_margin: default_fps_margin(),
+            fps_gears: default_fps_gears(), fps_margin: default_fps_margin(),
             pid: PidCoefficients::default(),
             cluster_profiles: default_cluster_profiles(),
-            auto_capacity_weight: default_auto_capacity_weight(),
-            adaptive_pid: AdaptivePidConfig::default(),
-
-            perf_floor: default_perf_floor_norm(),
-            perf_ceil: default_perf_ceil_norm(),
-            perf_init: default_perf_init(),
-            perf_cold_boot: default_perf_cold_boot(),
-            freq_hysteresis: default_hysteresis(),
-
-            heavy_frame_threshold_ms: default_heavy_frame_ms(),
-            loading_cumulative_ms: default_loading_cumulative_ms(),
-            loading_normal_tolerance: default_loading_normal_tolerance(),
-            loading_perf_floor: default_loading_perf_floor(),
-            loading_perf_ceiling: default_loading_perf_ceiling(),
-            loading_reentry_cooldown: default_loading_reentry_cooldown(),
-
-            post_loading_ignore_frames: default_post_loading_ignore(),
-            post_loading_perf_min: default_post_loading_perf_min(),
-            post_loading_perf_max: default_post_loading_perf_max(),
-            post_loading_downgrade_guard: default_post_loading_downgrade_guard(),
-
-            sustained_loading_cycle_threshold: default_sustained_loading_cycle_threshold(),
-            sustained_loading_window_ns: default_sustained_loading_window_ns(),
-            sustained_post_loading_ignore: default_sustained_post_loading_ignore(),
-
-            instant_error_threshold_ms: default_instant_error_threshold(),
-
-            soft_loading_fps_ratio: default_soft_loading_fps_ratio(),
-            soft_loading_perf_threshold: default_soft_loading_perf_threshold(),
-            soft_loading_confirm_frames: default_soft_loading_confirm_frames(),
-            soft_loading_perf_cap: default_soft_loading_perf_cap(),
-            soft_loading_exit_frames: default_soft_loading_exit_frames(),
-            soft_loading_breakthrough_fps_ratio: default_soft_loading_breakthrough_fps_ratio(),
-            soft_loading_breakthrough_window: default_soft_loading_breakthrough_window(),
-            soft_loading_exit_frames_breakthrough: default_soft_loading_exit_frames_breakthrough(),
-            soft_loading_probe_interval: default_soft_loading_probe_interval(),
-            soft_loading_probe_duration: default_soft_loading_probe_duration(),
-            soft_loading_probe_perf_cap: default_soft_loading_probe_perf_cap(),
-            soft_loading_probe_fps_gain_ratio: default_soft_loading_probe_fps_gain_ratio(),
-            soft_loading_probe_fail_decay_step: default_soft_loading_probe_fail_decay_step(),
-            soft_loading_downgrade_check_frames: default_soft_loading_downgrade_check_frames(),
-            soft_loading_gear_match_tolerance: default_soft_loading_gear_match_tolerance(),
-
-            app_switch_gap_ms: default_app_switch_gap_ms(),
-            app_switch_resume_perf: default_app_switch_resume_perf(),
-            app_switch_ignore_frames: default_app_switch_ignore_frames(),
-
-            scene_transition_cv_threshold: default_scene_transition_cv_threshold(),
-            scene_transition_guard_frames: default_scene_transition_guard_frames(),
-            scene_transition_max_continuous: default_scene_transition_max_continuous(),
-            scene_transition_fps_floor_ratio: default_scene_transition_fps_floor_ratio(),
-            scene_transition_force_exit_frames: default_scene_transition_force_exit_frames(),
-
-            jank_cooldown_frames_crit: default_jank_cooldown_crit(),
-            jank_cooldown_frames_heavy: default_jank_cooldown_heavy(),
-
-            downgrade_confirm_frames: default_downgrade_confirm_frames(),
-            downgrade_boost_perf_inc: default_downgrade_boost_perf_inc(),
-            downgrade_boost_duration: default_downgrade_boost_duration(),
-            downgrade_proximity_ratio: default_downgrade_proximity_ratio(),
-            upgrade_cooldown_after_downgrade: default_upgrade_cooldown_after_downgrade(),
-            stable_forgive_frames: default_stable_forgive_frames(),
-
-            fast_decay_frame_threshold: default_fast_decay_frame_threshold(),
-            fast_decay_perf_threshold: default_fast_decay_perf_threshold(),
-            fast_decay_max_step: default_fast_decay_max_step(),
-            fast_decay_min_step: default_fast_decay_min_step(),
-            fast_decay_post_jank_suppress: default_fast_decay_post_jank_suppress(),
-
-            deficit_suppress_ms: default_deficit_suppress_ms(),
-
-            mismatch_lock_threshold: default_mismatch_lock_threshold(),
-            mismatch_reapply_skip_cycles: default_mismatch_reapply_skip_cycles(),
-
-            max_inc_damped: default_max_inc_damped(),
-            max_inc_normal: default_max_inc_normal(),
-            damped_perf_cap: default_damped_perf_cap(),
-
-            freq_force_reapply_interval: default_freq_force_reapply_interval(),
-            fixed_max_frame_ms: default_fixed_max_frame_ms(),
-            cold_boot_ms: default_cold_boot_ms(),
+            auto_capacity_weight: d_auto_cap(),
+            perf_floor: d_perf_floor(), perf_ceil: d_perf_ceil(),
+            perf_init: d_perf_init(), perf_cold_boot: d_perf_cold(),
+            freq_hysteresis: d_hysteresis(),
+            heavy_frame_threshold_ms: d_heavy_ms(),
+            loading_cumulative_ms: d_load_ms(),
+            loading_normal_tolerance: d_load_tol(),
+            loading_perf_floor: d_load_pf(), loading_perf_ceiling: d_load_pc(),
+            post_loading_ignore_frames: d_post_ign(),
+            post_loading_perf: d_post_perf(),
+            post_loading_downgrade_guard: d_post_guard(),
+            upgrade_confirm_frames: d_up_confirm(),
+            downgrade_confirm_frames: d_dn_confirm(),
+            upgrade_cooldown_after_downgrade: d_up_cd(),
+            gear_dampen_frames: d_dampen(),
+            downgrade_boost_perf_inc: d_boost_inc(),
+            downgrade_boost_duration: d_boost_dur(),
+            fast_decay_frame_threshold: d_fd_thresh(),
+            fast_decay_perf_threshold: d_fd_perf(),
+            fast_decay_max_step: d_fd_max(), fast_decay_min_step: d_fd_min(),
+            jank_cooldown_frames: d_jank_cd(),
+            max_inc_damped: d_max_inc_d(), max_inc_normal: d_max_inc_n(),
+            damped_perf_cap: d_damped_cap(),
+            app_switch_gap_ms: d_switch_ms(), app_switch_resume_perf: d_switch_perf(),
+            freq_force_reapply_interval: d_force_int(),
+            fixed_max_frame_ms: d_max_frame(), cold_boot_ms: d_cold_ms(),
+            verify_freq_interval_secs: d_verify_interval(),
+            per_app_profiles: HashMap::new(),
+            per_app_margins: HashMap::new(),
+            core_temp_threshold: d_temp_thresh(),
+            core_temp_throttle_perf: d_temp_perf(),
+            util_cap_divisor: d_util_cap_divisor(),
+            scene_ema_alpha: d_scene_ema_alpha(),
         }
     }
 }
 
+// ════════════════════════════════════════════════════════════════
+//  Rules / Boot 配置
+// ════════════════════════════════════════════════════════════════
 
-// 辅助函数
 fn default_true() -> bool { true }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct RulesConfig {
-    #[serde(default = "default_true")]
-    pub yumi_scheduler: bool,
+    #[serde(default = "default_true")] pub yumi_scheduler: bool,
     pub dynamic_enabled: bool,
     pub global_mode: String,
     pub app_modes: HashMap<String, String>,
-    #[serde(default)]
-    pub ignored_apps: Vec<String>,
-    #[serde(default)]
-    pub fas_rules: FasRulesConfig,
+    #[serde(default)] pub ignored_apps: Vec<String>,
+    #[serde(default)] pub fas_rules: FasRulesConfig,
+    #[serde(default)] pub cpu_load_governor: CpuLoadGovernorConfig,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]
@@ -583,26 +419,20 @@ pub struct BootScriptsConfig {
 }
 
 pub fn read_config<T, P>(path: P) -> Result<T, Box<dyn Error>>
-where
-    T: DeserializeOwned + Default,
-    P: AsRef<std::path::Path>,
+where T: DeserializeOwned + Default, P: AsRef<std::path::Path>,
 {
-    let mut file_content = String::new();
     let path_ref = path.as_ref();
-
     match File::open(path_ref) {
         Ok(mut file) => {
-            file.read_to_string(&mut file_content)?;
-            match serde_yaml::from_str(&file_content) {
-                Ok(config) => Ok(config),
-                Err(e) => {
-                    warn!("[Config] Failed to parse YAML at {}: {}. Using default.", path_ref.display(), e);
-                    Ok(T::default())
-                }
-            }
+            let mut s = String::new();
+            file.read_to_string(&mut s)?;
+            serde_yaml::from_str(&s).or_else(|e| {
+                warn!("[Config] Parse error {}: {}. Default.", path_ref.display(), e);
+                Ok(T::default())
+            })
         }
         Err(_) => {
-            warn!("[Config] Config file not found at {}. Using default.", path_ref.display());
+            warn!("[Config] Not found: {}. Default.", path_ref.display());
             Ok(T::default())
         }
     }
