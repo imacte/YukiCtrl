@@ -69,79 +69,36 @@ pub fn default_cluster_profiles() -> Vec<ClusterProfile> {
 }
 
 // ════════════════════════════════════════════════════════════════
-//  Per-App 场景化配置 (新增)
+//  Per-App 配置
 // ════════════════════════════════════════════════════════════════
 
-/// 单个场景的覆写参数（Option = 未设置则回退到全局值）
-#[derive(Debug, Serialize, Deserialize, Clone, Default)]
-pub struct AppSceneConfig {
-    /// 该场景下可用的帧率档位
-    pub fps_gears: Option<Vec<f32>>,
-    /// 该场景下的帧率余量
-    pub fps_margin: Option<f32>,
-    /// 该场景下的性能地板
-    pub perf_floor: Option<f32>,
-    /// 该场景下的性能天花板
-    pub perf_ceil: Option<f32>,
-    /// 该场景的初始性能指数
-    pub perf_init: Option<f32>,
-}
-
-/// 每个游戏的完整配置档案
+/// 每个游戏的配置档案
+///
+/// 只需要指定 target_fps 数组，
+/// 运行时根据实际帧率动态匹配最近的档位。
 ///
 /// YAML 示例:
 /// ```yaml
 /// per_app_profiles:
 ///   "com.miHoYo.GenshinImpact":
-///     fps_gears: [30, 60]
+///     target_fps: [30, 60]
 ///     fps_margin: 4.0
-///     loading:
-///       fps_gears: [30]
-///       fps_margin: 8.0
-///       perf_floor: 0.30
-///       perf_ceil: 0.60
-///     lobby:
-///       fps_gears: [30, 60]
-///       fps_margin: 5.0
-///       perf_ceil: 0.75
-///     ingame:
-///       fps_gears: [30, 60]
-///       fps_margin: 3.0
-///     ingame_cpu_threshold: 0.45
+///
+///   "com.tencent.tmgp.sgame":
+///     target_fps: [60, 90, 120]
+///     fps_margin: 3.0
 /// ```
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct PerAppProfile {
-    /// 该应用的默认帧率档位（覆盖全局 fps_gears）
+    /// 该游戏会渲染到的目标帧率数组，运行时动态匹配
+    /// 例如 [30, 60] 表示游戏可能以 30fps 或 60fps 渲染
     #[serde(default)]
-    pub fps_gears: Option<Vec<f32>>,
+    pub target_fps: Option<Vec<f32>>,
 
-    /// 该应用的默认帧率余量（覆盖全局 fps_margin）
+    /// 该应用的帧率余量（覆盖全局 fps_margin）
     #[serde(default)]
     pub fps_margin: Option<f32>,
-
-    /// 加载动画场景 — 由连续重帧触发
-    #[serde(default)]
-    pub loading: Option<AppSceneConfig>,
-
-    /// 大厅/菜单场景 — CPU 负载低于 ingame_cpu_threshold
-    #[serde(default)]
-    pub lobby: Option<AppSceneConfig>,
-
-    /// 对局中场景 — CPU 负载高于 ingame_cpu_threshold
-    #[serde(default)]
-    pub ingame: Option<AppSceneConfig>,
-
-    /// 大厅→对局 判定的前台最重线程 CPU 利用率阈值 (0.0~1.0)
-    #[serde(default = "d_scene_cpu_thresh")]
-    pub ingame_cpu_threshold: f32,
-
-    /// 场景切换后的防抖帧数（防止频繁切换）
-    #[serde(default = "d_scene_debounce")]
-    pub scene_debounce_frames: u32,
 }
-
-fn d_scene_cpu_thresh() -> f32 { 0.40 }
-fn d_scene_debounce() -> u32 { 90 }
 
 // ════════════════════════════════════════════════════════════════
 //  CPU Load Governor 配置
@@ -274,12 +231,9 @@ pub struct FasRulesConfig {
     #[serde(default = "d_verify_interval")]
     pub verify_freq_interval_secs: u32,
 
-    /// 【新】每应用场景化配置。key = 包名
-    /// 替代旧的 per_app_margins（向后兼容：旧配置在加载时自动迁移）
     #[serde(default)]
     pub per_app_profiles: HashMap<String, PerAppProfile>,
 
-    /// 【兼容】旧的 per_app_margins 字段，加载后自动迁移到 per_app_profiles
     #[serde(default)]
     pub per_app_margins: HashMap<String, f32>,
 
@@ -291,21 +245,17 @@ pub struct FasRulesConfig {
     #[serde(default = "d_temp_perf")]
     pub core_temp_throttle_perf: f32,
 
-    /// 【新】CPU 负载辅助：前台线程利用率封顶的除数 (越小越激进)
+    /// CPU 负载辅助：前台线程利用率封顶的除数 (越小越激进)
     #[serde(default = "d_util_cap_divisor")]
     pub util_cap_divisor: f32,
-
-    /// 【新】CPU 负载辅助：场景检测平滑系数
-    #[serde(default = "d_scene_ema_alpha")]
-    pub scene_ema_alpha: f32,
 }
 
 pub fn default_fps_gears() -> Vec<f32> { vec![30.0, 60.0, 90.0, 120.0, 144.0] }
 pub fn default_fps_margin() -> String { "3".to_string() }
 fn d_auto_cap() -> bool { true }
-fn d_perf_floor() -> f32 { 0.18 }
+fn d_perf_floor() -> f32 { 0.22 }
 fn d_perf_ceil() -> f32 { 1.0 }
-fn d_perf_init() -> f32 { 0.40 }
+fn d_perf_init() -> f32 { 0.45 }
 fn d_perf_cold() -> f32 { 0.85 }
 pub fn d_hysteresis() -> f32 { 0.015 }
 pub fn d_heavy_ms() -> f32 { 150.0 }
@@ -320,16 +270,16 @@ fn d_up_confirm() -> u32 { 60 }
 fn d_dn_confirm() -> u32 { 90 }
 fn d_up_cd() -> u32 { 90 }
 fn d_dampen() -> u32 { 60 }
-fn d_boost_inc() -> f32 { 0.15 }
+fn d_boost_inc() -> f32 { 0.18 }
 fn d_boost_dur() -> u32 { 45 }
-fn d_fd_thresh() -> u32 { 60 }
-fn d_fd_perf() -> f32 { 0.65 }
-fn d_fd_max() -> f32 { 0.030 }
-fn d_fd_min() -> f32 { 0.005 }
-fn d_jank_cd() -> u32 { 10 }
-fn d_max_inc_d() -> f32 { 0.035 }
-fn d_max_inc_n() -> f32 { 0.06 }
-fn d_damped_cap() -> f32 { 0.90 }
+fn d_fd_thresh() -> u32 { 75 }
+fn d_fd_perf() -> f32 { 0.70 }
+fn d_fd_max() -> f32 { 0.022 }
+fn d_fd_min() -> f32 { 0.004 }
+fn d_jank_cd() -> u32 { 15 }
+fn d_max_inc_d() -> f32 { 0.045 }
+fn d_max_inc_n() -> f32 { 0.075 }
+fn d_damped_cap() -> f32 { 0.92 }
 fn d_switch_ms() -> f32 { 3000.0 }
 fn d_switch_perf() -> f32 { 0.60 }
 fn d_force_int() -> u32 { 30 }
@@ -339,7 +289,6 @@ fn d_verify_interval() -> u32 { 3 }
 fn d_temp_thresh() -> f64 { 0.0 }
 fn d_temp_perf() -> f32 { 0.70 }
 fn d_util_cap_divisor() -> f32 { 0.45 }
-fn d_scene_ema_alpha() -> f32 { 0.15 }
 
 impl FasRulesConfig {
     /// 将旧的 per_app_margins 迁移到 per_app_profiles
@@ -391,7 +340,6 @@ impl Default for FasRulesConfig {
             core_temp_threshold: d_temp_thresh(),
             core_temp_throttle_perf: d_temp_perf(),
             util_cap_divisor: d_util_cap_divisor(),
-            scene_ema_alpha: d_scene_ema_alpha(),
         }
     }
 }

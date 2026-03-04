@@ -17,7 +17,7 @@
 
 use crate::scheduler::config::Config;
 use crate::monitor::config::{
-    FasRulesConfig, ClusterProfile, PerAppProfile, AppSceneConfig,
+    FasRulesConfig, ClusterProfile, PerAppProfile,
 };
 use std::fs::{self, File, OpenOptions};
 use std::io::{Write, Seek, SeekFrom};
@@ -102,8 +102,6 @@ impl FastWriter {
 
 // ════════════════════════════════════════════════════════════════
 //  PolicyController — 单个 cpufreq policy 的频率控制
-//  [清理] 移除了 CpuMask/affected_cpus/is_critical/write_freq_smart
-//         改为统一的 apply_freq + 可选的 relaxed 模式
 // ════════════════════════════════════════════════════════════════
 
 pub struct PolicyController {
@@ -195,7 +193,10 @@ impl PolicyController {
     }
 
     fn do_verify_freq(&mut self, write_freq: u32) {
-        if self.verify_timer.elapsed() >= std::time::Duration::from_secs(3) {
+        // [Fix] 缩短校验间隔：3秒→1.5秒，更快发现内核频率覆写
+        // 日志中104次freq mismatch说明内核覆写非常频繁
+        let verify_interval = std::time::Duration::from_millis(1500);
+        if self.verify_timer.elapsed() >= verify_interval {
             self.verify_timer = Instant::now();
             if let Some(expected) = self.verify_freq {
                 if let Some(actual) = self.read_current_freq() {
@@ -372,112 +373,6 @@ impl PidController {
 }
 
 // ════════════════════════════════════════════════════════════════
-//  GameScene — 场景枚举 + 场景检测器
-// ════════════════════════════════════════════════════════════════
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GameScene {
-    /// 默认/未知场景
-    Default,
-    /// 加载动画（连续重帧触发，与现有 is_loading 逻辑绑定）
-    Loading,
-    /// 大厅/菜单（CPU 负载较低）
-    Lobby,
-    /// 对局中（CPU 负载高）
-    InGame,
-}
-
-impl GameScene {
-    fn as_str(&self) -> &'static str {
-        match self {
-            Self::Default => "default",
-            Self::Loading => "loading",
-            Self::Lobby => "lobby",
-            Self::InGame => "ingame",
-        }
-    }
-}
-
-struct SceneDetector {
-    current_scene: GameScene,
-    /// 前台最重线程利用率的 EMA 平滑值
-    ema_fg_util: f32,
-    /// 场景切换防抖计数器
-    debounce_counter: u32,
-    /// 待确认的目标场景
-    pending_scene: GameScene,
-}
-
-impl SceneDetector {
-    fn new() -> Self {
-        Self {
-            current_scene: GameScene::Default,
-            ema_fg_util: 0.0,
-            debounce_counter: 0,
-            pending_scene: GameScene::Default,
-        }
-    }
-
-    /// 更新 CPU 利用率 EMA 并判定场景
-    /// 返回 Some(new_scene) 如果场景发生了切换
-    fn update(
-        &mut self,
-        fg_util: f32,
-        is_loading: bool,
-        threshold: f32,
-        debounce_frames: u32,
-        ema_alpha: f32,
-    ) -> Option<GameScene> {
-        // 更新 EMA
-        if self.ema_fg_util <= 0.001 {
-            self.ema_fg_util = fg_util;
-        } else {
-            self.ema_fg_util = self.ema_fg_util * (1.0 - ema_alpha) + fg_util * ema_alpha;
-        }
-
-        // 判定目标场景
-        let target = if is_loading {
-            GameScene::Loading
-        } else if self.ema_fg_util >= threshold {
-            GameScene::InGame
-        } else {
-            GameScene::Lobby
-        };
-
-        // 防抖逻辑
-        if target != self.current_scene {
-            if target == self.pending_scene {
-                self.debounce_counter += 1;
-                if self.debounce_counter >= debounce_frames {
-                    let old = self.current_scene;
-                    self.current_scene = target;
-                    self.debounce_counter = 0;
-                    self.pending_scene = GameScene::Default;
-                    debug!("FAS: scene {} → {} (ema_util={:.2})",
-                        old.as_str(), target.as_str(), self.ema_fg_util);
-                    return Some(target);
-                }
-            } else {
-                self.pending_scene = target;
-                self.debounce_counter = 1;
-            }
-        } else {
-            self.debounce_counter = 0;
-            self.pending_scene = self.current_scene;
-        }
-
-        None
-    }
-
-    fn reset(&mut self) {
-        self.current_scene = GameScene::Default;
-        self.ema_fg_util = 0.0;
-        self.debounce_counter = 0;
-        self.pending_scene = GameScene::Default;
-    }
-}
-
-// ════════════════════════════════════════════════════════════════
 //  工具函数
 // ════════════════════════════════════════════════════════════════
 
@@ -528,7 +423,7 @@ enum GearDecision {
 // ════════════════════════════════════════════════════════════════
 //  FasController — 主控制器 (重构版)
 //
-//  场景系统: SceneDetector + PerAppProfile
+//  帧率档位匹配 + PID 控制
 //  CPU 负载集成: core_utils 参与频率分配
 // ════════════════════════════════════════════════════════════════
 
@@ -592,11 +487,10 @@ pub struct FasController {
     foreground_max_util: f32,
     core_utils: Vec<f32>,
 
-    // [新] 场景系统
+    // 当前游戏包名
     current_package: String,
-    scene_detector: SceneDetector,
+    // 当前游戏的 per-app 配置
     active_profile: Option<PerAppProfile>,
-    active_scene_overrides: Option<AppSceneConfig>,
 
     // perf 地板死锁连续帧计数
     floor_stuck_frames: u32,
@@ -648,9 +542,7 @@ impl FasController {
             foreground_max_util: 0.0,
             core_utils: Vec::new(),
             current_package: String::new(),
-            scene_detector: SceneDetector::new(),
             active_profile: None,
-            active_scene_overrides: None,
             floor_stuck_frames: 0,
             ema_fg_util: 0.0,
             cfg,
@@ -678,114 +570,25 @@ impl FasController {
     pub fn update_core_utils(&mut self, utils: &[f32]) {
         self.core_utils.clear();
         self.core_utils.extend_from_slice(utils);
-
-        // 同时驱动场景检测（每次 SystemLoadUpdate 都调用，约 200ms 周期）
-        self.tick_scene_detection();
     }
 
     // ════════════════════════════════════════════════════════════
-    //  场景系统
+    //  辅助方法
     // ════════════════════════════════════════════════════════════
 
-    /// 场景检测 tick，由 update_core_utils 驱动
-    fn tick_scene_detection(&mut self) {
-        if self.active_profile.is_none() { return; }
-        let profile = self.active_profile.as_ref().unwrap();
-
-        let threshold = profile.ingame_cpu_threshold;
-        let debounce = profile.scene_debounce_frames;
-        let ema_alpha = self.cfg.scene_ema_alpha;
-
-        if let Some(new_scene) = self.scene_detector.update(
-            self.foreground_max_util,
-            self.is_loading,
-            threshold,
-            debounce,
-            ema_alpha,
-        ) {
-            self.apply_scene_config(new_scene);
-        }
-    }
-
-    /// 根据场景切换应用对应的 gears/margin/perf 参数
-    fn apply_scene_config(&mut self, scene: GameScene) {
-        let profile = match &self.active_profile {
-            Some(p) => p,
-            None => return,
-        };
-
-        let scene_cfg = match scene {
-            GameScene::Loading => profile.loading.as_ref(),
-            GameScene::Lobby => profile.lobby.as_ref(),
-            GameScene::InGame => profile.ingame.as_ref(),
-            GameScene::Default => None,
-        };
-
-        // ★ 提前提取所有后续需要的值，彻底释放对 self.active_profile 的借用
-        let profile_fps_gears = profile.fps_gears.clone();
-        let profile_fps_margin = profile.fps_margin;
-        let scene_overrides = scene_cfg.cloned();
-        let scene_fps_gears = scene_cfg.and_then(|s| s.fps_gears.clone());
-        let scene_fps_margin = scene_cfg.and_then(|s| s.fps_margin);
-        let scene_perf_floor = scene_cfg.and_then(|s| s.perf_floor);
-        let scene_perf_ceil = scene_cfg.and_then(|s| s.perf_ceil);
-        let scene_perf_init = scene_cfg.and_then(|s| s.perf_init);
-
-        // 至此 profile / scene_cfg 的借用结束，可以安全使用 &mut self
-        let _ = profile;
-
-        // 保存当前场景覆写
-        self.active_scene_overrides = scene_overrides;
-
-        // 应用 fps_gears 覆写
-        let new_gears = scene_fps_gears.as_ref()
-            .or(profile_fps_gears.as_ref());
-        if let Some(gears) = new_gears {
-            if !gears.is_empty() && *gears != self.fps_gears {
-                self.fps_gears = gears.clone();
-                if !self.fps_gears.iter().any(|&g| (g - self.current_target_fps).abs() < 0.5) {
-                    self.current_target_fps = self.fps_gears.iter().copied()
-                        .fold(30.0_f32, f32::max);
-                    self.fps_window.clear();
-                    self.pid.reset();
-                }
-                self.refresh_cached_values();
-            }
-        }
-
-        // 应用 margin 覆写
-        let new_margin = scene_fps_margin.or(profile_fps_margin);
-        if let Some(m) = new_margin {
-            self.fps_margin = m;
-        }
-
-        // 应用 perf 范围覆写（当前 perf 会被钳位到新范围）
-        let floor = scene_perf_floor.unwrap_or(self.cfg.perf_floor);
-        let ceil = scene_perf_ceil.unwrap_or(self.cfg.perf_ceil);
-        self.perf_index = self.perf_index.clamp(floor, ceil);
-
-        // 如果场景指定了 perf_init，在切入时重置
-        if let Some(init) = scene_perf_init {
-            self.perf_index = init.clamp(floor, ceil);
-            self.pid.reset();
-        }
-
-        info!("FAS: scene → {} | gears={:?} margin={:.1} perf={:.2} [{:.2}..{:.2}]",
-            scene.as_str(), self.fps_gears, self.fps_margin, self.perf_index, floor, ceil);
-    }
-
-    /// 获取当前场景的有效 perf_floor
+    /// 获取有效 perf_floor —— 根据目标帧率动态抬高地板
+    /// 高刷游戏 (120/144fps) 的 budget 仅 6.9~8.3ms，perf 过低会导致
+    /// CPU 频率不足以在 budget 内渲染完一帧，任何突发负载都立刻卡顿。
+    /// 公式: floor = base_floor + (target_fps - 60) * 0.003，上限 0.35
     fn effective_perf_floor(&self) -> f32 {
-        self.active_scene_overrides.as_ref()
-            .and_then(|s| s.perf_floor)
-            .unwrap_or(self.cfg.perf_floor)
+        let base = self.cfg.perf_floor;
+        let fps_bonus = ((self.current_target_fps - 60.0).max(0.0) * 0.003).min(0.17);
+        (base + fps_bonus).min(0.35)
     }
 
-    /// 获取当前场景的有效 perf_ceil
+    /// 获取有效 perf_ceil
     fn effective_perf_ceil(&self) -> f32 {
-        self.active_scene_overrides.as_ref()
-            .and_then(|s| s.perf_ceil)
-            .unwrap_or(self.cfg.perf_ceil)
+        self.cfg.perf_ceil
     }
 
     // ════════════════════════════════════════════════════════════
@@ -833,11 +636,13 @@ impl FasController {
         self.ema_actual_ms = 0.0;
         self.pid.reset();
         self.fps_window.clear();
-        // [Fix] On gear UPGRADE, enforce minimum perf
         let final_perf = if new_fps > old {
             let min_upgrade_perf = (new_fps / 144.0).clamp(0.45, 0.70);
             perf.max(min_upgrade_perf)
-        } else { perf };
+        } else { 
+            let max_downgrade_perf = (new_fps / 144.0 + 0.30).clamp(0.45, 0.75);
+            perf.min(max_downgrade_perf)
+        };
         self.perf_index = final_perf;
         self.gear_dampen_frames = dampen;
         self.downgrade_boost_active = false;
@@ -897,24 +702,24 @@ impl FasController {
     /// 通知 FAS 当前前台游戏变化
     pub fn set_game(&mut self, _pid: i32, package: &str) {
         self.current_package = package.to_string();
-        self.scene_detector.reset();
-        self.active_scene_overrides = None;
-
-        // 查找每游戏配置档案
         let profile = self.cfg.per_app_profiles.get(package).cloned();
         if let Some(ref p) = profile {
-            // 应用该应用的默认 margin 和 gears
             if let Some(m) = p.fps_margin { self.fps_margin = m; }
-            if let Some(ref gears) = p.fps_gears {
+            if let Some(ref gears) = p.target_fps {
                 if !gears.is_empty() {
                     self.fps_gears = gears.clone();
+                    if !self.fps_gears.iter().any(|&g| (g - self.current_target_fps).abs() < 0.5) {
+                        self.current_target_fps = self.fps_gears.iter().copied()
+                            .fold(60.0_f32, f32::max);
+                    }
                     self.refresh_cached_values();
                 }
             }
-            info!("FAS: per-app profile for {} loaded (gears={:?}, margin={:.1}, scenes={})",
-                package, self.fps_gears, self.fps_margin,
-                [p.loading.is_some(), p.lobby.is_some(), p.ingame.is_some()]
-                    .iter().filter(|&&x| x).count());
+            info!("FAS: set_game | pkg={} | gears={:?} | target={:.0}fps",
+                package, self.fps_gears, self.current_target_fps);
+        } else {
+            warn!("FAS: no per-app profile for '{}', using global gears {:?}",
+                package, self.fps_gears);
         }
         self.active_profile = profile;
     }
@@ -923,8 +728,6 @@ impl FasController {
     pub fn clear_game(&mut self) {
         self.current_package.clear();
         self.active_profile = None;
-        self.active_scene_overrides = None;
-        self.scene_detector.reset();
         self.foreground_max_util = 0.0;
         self.ema_fg_util = 0.0;
         self.core_utils.clear();
@@ -992,7 +795,6 @@ impl FasController {
         self.cfg.pid = new_rules.pid.clone();
         self.cfg.fps_margin = new_rules.fps_margin.clone();
         self.cfg.util_cap_divisor = new_rules.util_cap_divisor;
-        self.cfg.scene_ema_alpha = new_rules.scene_ema_alpha;
 
         // PID 系数变更时重置积分器
         if (old_kp - new_rules.pid.kp).abs() > 0.001
@@ -1009,6 +811,16 @@ impl FasController {
             let profile = new_rules.per_app_profiles.get(&self.current_package).cloned();
             if let Some(ref p) = profile {
                 if let Some(m) = p.fps_margin { self.fps_margin = m; }
+                // 更新 target_fps 齿轮列表
+                if let Some(ref gears) = p.target_fps {
+                    if !gears.is_empty() {
+                        self.fps_gears = gears.clone();
+                        if !self.fps_gears.iter().any(|&g| (g - self.current_target_fps).abs() < 0.5) {
+                            self.current_target_fps = self.fps_gears.iter().copied()
+                                .fold(60.0_f32, f32::max);
+                        }
+                    }
+                }
             } else {
                 // 无 per-app 配置，用全局 margin
                 if let Ok(m) = new_rules.fps_margin.parse::<f32>() { self.fps_margin = m; }
@@ -1022,7 +834,7 @@ impl FasController {
         if !new_rules.fps_gears.is_empty() && new_rules.fps_gears != self.cfg.fps_gears {
             self.cfg.fps_gears = new_rules.fps_gears.clone();
             // 仅在没有 per-app 覆写时更新运行时齿轮
-            if self.active_profile.as_ref().and_then(|p| p.fps_gears.as_ref()).is_none() {
+            if self.active_profile.as_ref().and_then(|p| p.target_fps.as_ref()).is_none() {
                 self.fps_gears = new_rules.fps_gears.clone();
                 if !self.fps_gears.iter().any(|&g| (g - self.current_target_fps).abs() < 0.5) {
                     self.current_target_fps = self.fps_gears.iter().copied()
@@ -1094,9 +906,8 @@ impl FasController {
                 // 变化小于迟滞阈值且非强制时跳过
                 if diff <= self.cfg.freq_hysteresis && !force { continue; }
 
-                // [新] 根据 cluster 实际负载选择写入策略
+                // 根据 cluster 实际负载选择写入策略
                 // 如果该 cluster 对应的核心利用率低于 30%，用 relaxed 模式节电
-                // [Fix] Always locked mode in FAS - relaxed lets kernel drop freq unexpectedly
                 policy.apply_freq_locked(target_freq);
             } else if force {
                 policy.force_reapply();
@@ -1447,28 +1258,30 @@ impl FasController {
 
         if inst_err < -crit_ms {
             self.jank_streak += 1;
-            let streak_m = (1.0 - (-0.4 * self.jank_streak as f32).exp()).clamp(0.05, 0.85);
-            let inc = if damped { 0.045 } else { 0.070 };
+            let streak_m = (1.0 - (-0.4 * self.jank_streak as f32).exp()).clamp(0.30, 0.85);
+            let fps_urgency = (self.current_target_fps / 60.0).sqrt().clamp(1.0, 1.6);
+            let inc = if damped { 0.050 * fps_urgency } else { 0.080 * fps_urgency };
             self.perf_index += inc * jank_scale * streak_m;
             act = "crit";
             self.consecutive_normal_frames = 0;
             self.jank_cooldown = scale_frames(self.cfg.jank_cooldown_frames * 3, self.current_target_fps);
         } else if ema_err < -heavy_ms {
             self.jank_streak += 1;
-            let streak_m = (1.0 - (-0.35 * self.jank_streak as f32).exp()).clamp(0.15, 0.70);
-            let inc = if damped { 0.020 } else { 0.035 };
+            let streak_m = (1.0 - (-0.35 * self.jank_streak as f32).exp()).clamp(0.30, 0.70);
+            let fps_urgency = (self.current_target_fps / 60.0).sqrt().clamp(1.0, 1.4);
+            let inc = if damped { 0.025 * fps_urgency } else { 0.040 * fps_urgency };
             self.perf_index += inc * jank_scale * streak_m;
             act = "heavy";
             self.consecutive_normal_frames = 0;
+            let fps_cd_scale = (self.current_target_fps / 60.0).clamp(1.0, 2.5);
             self.jank_cooldown = self.jank_cooldown.max(
-                scale_frames(self.cfg.jank_cooldown_frames / 2, self.current_target_fps));
+                (scale_frames(self.cfg.jank_cooldown_frames, self.current_target_fps) as f32 * fps_cd_scale) as u32);
         } else {
             self.jank_streak = 0;
             self.consecutive_normal_frames += 1;
             let raw = self.pid.compute(ema_err, inst_err, norm);
             if raw > 0.0 {
                 let d = if self.downgrade_boost_active { 0.0 } else { 1.0 };
-                // [Fix] Throttle decay when perf is near floor to prevent cliff-then-stuck pattern
                 let floor_guard = if self.perf_index < floor + 0.15 { 0.3 } else { 1.0 };
                 self.perf_index -= raw * d * norm * floor_guard;
                 act = "pid-decay";
@@ -1518,11 +1331,12 @@ impl FasController {
 
         // Clamp (使用场景 override 的范围)
         self.perf_index = self.perf_index.clamp(floor, ceil);
-        let scale = (60.0 / self.current_target_fps.max(1.0)).powf(0.75);
+        // base * (fps/60)^0.3，高刷时允许更大的单帧增量。
+        let scale = (self.current_target_fps / 60.0).powf(0.3).clamp(0.8, 1.8);
         let max_inc = if damped {
-            (self.cfg.max_inc_damped * scale).max(0.035)
+            (self.cfg.max_inc_damped * scale).max(0.040)
         } else {
-            (self.cfg.max_inc_normal * scale).max(0.055)
+            (self.cfg.max_inc_normal * scale).max(0.065)
         };
         if self.perf_index > old_perf + max_inc { self.perf_index = old_perf + max_inc; }
         if damped && self.perf_index > self.cfg.damped_perf_cap {
@@ -1543,15 +1357,21 @@ impl FasController {
         let high_fps_factor = (self.current_target_fps / 60.0).powf(0.70).max(1.0);
         let adjusted_thresh = (thresh as f32 * high_fps_factor) as u32;
 
+        // 阈值随 fps 升高而升高，120fps 时约 0.75，144fps 时约 0.80
+        let dynamic_decay_threshold = self.cfg.fast_decay_perf_threshold
+            + ((self.current_target_fps - 60.0).max(0.0) * 0.002).min(0.15);
+
         if self.consecutive_normal_frames >= adjusted_thresh
-            && self.perf_index > self.cfg.fast_decay_perf_threshold
+            && self.perf_index > dynamic_decay_threshold
             && self.jank_cooldown == 0
             && !self.downgrade_boost_active
             && self.init_time.elapsed().as_millis() > self.cfg.cold_boot_ms as u128
         {
             let fps_dampen = (60.0 / self.current_target_fps.max(30.0)).powf(0.40);
-            let step = ((self.perf_index - 0.50) / 0.50 * self.cfg.fast_decay_max_step * fps_dampen)
-                .clamp(self.cfg.fast_decay_min_step * fps_dampen, self.cfg.fast_decay_max_step * fps_dampen);
+            // 衰减步长额外乘以 0.6，降低高刷下的衰减激进度
+            let decay_scale = if self.current_target_fps > 90.0 { 0.6 } else { 1.0 };
+            let step = ((self.perf_index - 0.50) / 0.50 * self.cfg.fast_decay_max_step * fps_dampen * decay_scale)
+                .clamp(self.cfg.fast_decay_min_step * fps_dampen, self.cfg.fast_decay_max_step * fps_dampen * decay_scale);
             self.perf_index -= step;
             self.consecutive_normal_frames = 0;
         }
@@ -1644,14 +1464,13 @@ impl FasController {
         if self.log_counter % 30 == 0 {
             let ema_err = self.cached_ema_budget - self.ema_actual_ms;
             let inst_err = self.cached_budget_ms - actual_ms;
-            let scene_str = self.scene_detector.current_scene.as_str();
             info!("FAS | {:.0}fps avg:{:.1} | {:.2}ms ema:{:.2} | \
-                err:{:+.2}/{:+.2} | {} | P:{:.3} fg_util:{:.2} scene:{}\
+                err:{:+.2}/{:+.2} | {} | P:{:.3} fg_util:{:.2}\
                 {}{}\
                 {}",
                 self.current_target_fps, avg_fps, actual_ms, self.ema_actual_ms,
                 ema_err, inst_err, act, self.perf_index,
-                self.foreground_max_util, scene_str,
+                self.foreground_max_util,
                 if self.upgrade_cooldown > 0 { " cd" } else { "" },
                 if self.gear_dampen_frames > 0 { " damp" } else { "" },
                 if self.current_temperature > 0.0 {
