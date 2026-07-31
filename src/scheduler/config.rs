@@ -60,6 +60,11 @@ pub struct CpuLoadGovernorConfig {
     #[serde(default = "d_clg_down_fast_thresh")] pub down_fast_threshold: f32,
     /// 快速降频时对 smoothing_down 的放大倍数
     #[serde(default = "d_clg_down_fast_mult")] pub down_fast_mult: f32,
+    /// 尖峰抑制：单 tick util 跳升超过此值时，其增量按 spike_decay 比例衰减，
+    /// 避免孤立瞬时尖峰（如单核 0↔100%）瞬间拉满 perf
+    #[serde(default = "d_clg_spike_jump")] pub spike_jump_threshold: f32,
+    /// 尖峰增量保留比例（0.0=完全抑制，1.0=不抑制）
+    #[serde(default = "d_clg_spike_decay")] pub spike_decay: f32,
 }
 
 fn d_clg_up_thresh() -> f32 { 0.80 }
@@ -78,6 +83,8 @@ fn d_clg_slow_up_scale() -> f32 { 0.02 }
 fn d_clg_slow_down_scale() -> f32 { 0.5 }
 fn d_clg_down_fast_thresh() -> f32 { 0.10 }
 fn d_clg_down_fast_mult() -> f32 { 2.5 }
+fn d_clg_spike_jump() -> f32 { 0.35 }
+fn d_clg_spike_decay() -> f32 { 0.30 }
 
 impl Default for CpuLoadGovernorConfig {
     fn default() -> Self {
@@ -99,6 +106,8 @@ impl Default for CpuLoadGovernorConfig {
             slow_down_scale: d_clg_slow_down_scale(),
             down_fast_threshold: d_clg_down_fast_thresh(),
             down_fast_mult: d_clg_down_fast_mult(),
+            spike_jump_threshold: d_clg_spike_jump(),
+            spike_decay: d_clg_spike_decay(),
         }
     }
 }
@@ -123,6 +132,8 @@ impl CpuLoadGovernorConfig {
         if !self.slow_down_scale.is_finite() { self.slow_down_scale = d_clg_slow_down_scale(); }
         if !self.down_fast_threshold.is_finite() { self.down_fast_threshold = d_clg_down_fast_thresh(); }
         if !self.down_fast_mult.is_finite() { self.down_fast_mult = d_clg_down_fast_mult(); }
+        if !self.spike_jump_threshold.is_finite() { self.spike_jump_threshold = d_clg_spike_jump(); }
+        if !self.spike_decay.is_finite() { self.spike_decay = d_clg_spike_decay(); }
 
         // 区间限制（语义约束）
         self.up_threshold = self.up_threshold.clamp(0.0, 1.0);
@@ -137,6 +148,8 @@ impl CpuLoadGovernorConfig {
         self.slow_down_scale = self.slow_down_scale.clamp(0.0, 1.0);
         self.up_jump_threshold = self.up_jump_threshold.clamp(0.0, 1.0);
         self.down_fast_threshold = self.down_fast_threshold.clamp(0.0, 1.0);
+        self.spike_jump_threshold = self.spike_jump_threshold.clamp(0.0, 1.0);
+        self.spike_decay = self.spike_decay.clamp(0.0, 1.0);
         self.headroom_ramp = self.headroom_ramp.clamp(0.0, 1.0);
         // headroom 语义 >= 1（余量放大），down_fast_mult 语义 >= 1（放大）
         self.headroom_factor = self.headroom_factor.clamp(1.0, 3.0);

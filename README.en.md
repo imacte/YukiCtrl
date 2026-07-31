@@ -439,8 +439,10 @@ fast:
 | `up_jump_threshold` | float | 0.35 | When target perf exceeds current perf by more than this amount, ramp up via the fast path. |
 | `slow_up_scale` | float | 0.02 | Minimum ramp-up rate basis inside the hysteresis band (scaling of smoothing_up); the rate ramps linearly toward full speed as util approaches up_threshold, preventing slow mid-load ramp-up. |
 | `slow_down_scale` | float | 0.5 | Scaling factor applied to smoothing_down inside the hysteresis band (down_threshold..up_threshold), preventing high-freq lockup and hunting. |
-| `down_fast_threshold` | float | 0.10 | Fast ramp-down triggers when load drops below this value. |
+| `down_fast_threshold` | float | 0.10 | Fast ramp-down triggers when load drops below this value (also bypasses the ramp-down confirmation delay). |
 | `down_fast_mult` | float | 2.5 | Multiplier applied to smoothing_down for fast ramp-down. |
+| `spike_jump_threshold` | float | 0.35 | Spike suppression: when load jumps more than this in a single tick, the increment is scaled by spike_decay, preventing isolated transient spikes (e.g. single core 0↔100%) from saturating perf instantly. |
+| `spike_decay` | float | 0.30 | Fraction of the spike increment that is kept (0 = fully suppressed, 1 = no suppression). |
 
 -----
 

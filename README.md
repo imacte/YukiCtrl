@@ -439,8 +439,10 @@ fast:
 | `up_jump_threshold` | float | 0.35 | 目标性能超过当前性能的幅度大于此值时，按快速通道升频。 |
 | `slow_up_scale` | float | 0.02 | 滞回带内升频的最低速率基准（对 smoothing_up 的缩放）；速率随 util 接近 up_threshold 线性提升至全速，防止中等负载升频过慢。 |
 | `slow_down_scale` | float | 0.5 | 滞回带（down_threshold~up_threshold）内降频时对 smoothing_down 的缩放系数。 |
-| `down_fast_threshold` | float | 0.10 | 负载低于此值时触发快速降频。 |
+| `down_fast_threshold` | float | 0.10 | 负载低于此值时触发快速降频（且跳过降频确认期立即生效）。 |
 | `down_fast_mult` | float | 2.5 | 快速降频时对 smoothing_down 的放大倍数。 |
+| `spike_jump_threshold` | float | 0.35 | 尖峰抑制：单 tick 负载跳升超过此值时，其增量按 spike_decay 比例衰减，避免孤立瞬时尖峰（如单核 0↔100%）瞬间拉满性能。 |
+| `spike_decay` | float | 0.30 | 尖峰增量保留比例（0=完全抑制，1=不抑制）。 |
 
 -----
 

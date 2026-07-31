@@ -54,6 +54,8 @@ struct ClusterState {
     current_freq: u32,
     down_wait: u32,
     up_wait: u32,
+    /// 上一 tick 的原始 max_util，用于尖峰跳升检测
+    last_util: f32,
 }
 
 impl ClusterState {
@@ -221,6 +223,7 @@ impl CpuLoadGovernor {
                 current_freq: 0,
                 down_wait: 0,
                 up_wait: 0,
+                last_util: 0.0,
             };
 
             let init_freq = cluster.find_nearest_freq(init_perf);
@@ -332,7 +335,16 @@ impl CpuLoadGovernor {
         if !self.active { return; }
 
         for cluster in &mut self.clusters {
-            let util = cluster.max_util(core_utils);
+            let raw_util = cluster.max_util(core_utils);
+            // 尖峰抑制：单 tick 跳升超过阈值时衰减其增量，
+            // 孤立瞬时尖峰（如单核 0↔100%）不瞬间拉满 perf；
+            // 持续负载下一 tick jump 归零即全量生效，不拖慢真实升频
+            let util = if raw_util > cluster.last_util + self.cfg.spike_jump_threshold {
+                cluster.last_util + (raw_util - cluster.last_util) * self.cfg.spike_decay
+            } else {
+                raw_util
+            };
+            cluster.last_util = raw_util;
 
             // headroom 在 up_threshold 附近线性过渡，避免阶跃导致的振荡
             let ramp_start = self.cfg.up_threshold - self.cfg.headroom_ramp;
@@ -376,7 +388,11 @@ impl CpuLoadGovernor {
             } else {
                 cluster.up_wait = 0;
                 cluster.down_wait += 1;
-                if cluster.down_wait >= self.cfg.down_rate_limit_ticks {
+                // 极低负载立即快速降频（跳过 down_wait 确认期），
+                // 消除尖峰消失后 perf 长时间悬停高位的滞后
+                if cluster.down_wait >= self.cfg.down_rate_limit_ticks
+                    || util < self.cfg.down_fast_threshold
+                {
                     // 降频门控：只要目标低于当前即可降，避免滞回带内锁死高位
                     let active_smoothing_down = if util < self.cfg.down_fast_threshold {
                         // 极低负载：快速回落

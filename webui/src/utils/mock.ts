@@ -30,16 +30,16 @@ const mockConfig = {
   IO_Settings: { Scheduler: "none", read_ahead_kb: "128", nomerges: "2", iostats: "0" },
   CpuIdle: { current_governor: "" },
   powersave: {
-    cpu_load_governor: { up_threshold: 0.85, down_threshold: 0.60, smoothing_up: 0.40, smoothing_down: 0.50, down_rate_limit_ticks: 2, headroom_factor: 1.10, headroom_ramp: 0.15, perf_floor: 0.10, perf_ceil: 0.70, perf_init: 0.30, up_jump_threshold: 0.35, slow_up_scale: 0.02, slow_down_scale: 0.5, down_fast_threshold: 0.10, down_fast_mult: 2.5 }
+    cpu_load_governor: { up_threshold: 0.85, down_threshold: 0.60, smoothing_up: 0.40, smoothing_down: 0.50, down_rate_limit_ticks: 2, headroom_factor: 1.10, headroom_ramp: 0.15, perf_floor: 0.10, perf_ceil: 0.70, perf_init: 0.30, up_jump_threshold: 0.35, slow_up_scale: 0.02, slow_down_scale: 0.5, down_fast_threshold: 0.10, down_fast_mult: 2.5, spike_jump_threshold: 0.35, spike_decay: 0.30 }
   },
   balance: {
-    cpu_load_governor: { up_threshold: 0.80, down_threshold: 0.50, smoothing_up: 0.60, smoothing_down: 0.30, down_rate_limit_ticks: 3, headroom_factor: 1.25, headroom_ramp: 0.15, perf_floor: 0.15, perf_ceil: 1.0, perf_init: 0.50, up_jump_threshold: 0.35, slow_up_scale: 0.02, slow_down_scale: 0.5, down_fast_threshold: 0.10, down_fast_mult: 2.5 }
+    cpu_load_governor: { up_threshold: 0.80, down_threshold: 0.50, smoothing_up: 0.60, smoothing_down: 0.30, down_rate_limit_ticks: 3, headroom_factor: 1.25, headroom_ramp: 0.15, perf_floor: 0.15, perf_ceil: 1.0, perf_init: 0.50, up_jump_threshold: 0.35, slow_up_scale: 0.02, slow_down_scale: 0.5, down_fast_threshold: 0.10, down_fast_mult: 2.5, spike_jump_threshold: 0.35, spike_decay: 0.30 }
   },
   performance: {
-    cpu_load_governor: { up_threshold: 0.65, down_threshold: 0.40, smoothing_up: 0.80, smoothing_down: 0.20, down_rate_limit_ticks: 5, headroom_factor: 1.40, headroom_ramp: 0.15, perf_floor: 0.35, perf_ceil: 1.0, perf_init: 0.60, up_jump_threshold: 0.35, slow_up_scale: 0.02, slow_down_scale: 0.5, down_fast_threshold: 0.10, down_fast_mult: 2.5 }
+    cpu_load_governor: { up_threshold: 0.65, down_threshold: 0.40, smoothing_up: 0.80, smoothing_down: 0.20, down_rate_limit_ticks: 5, headroom_factor: 1.40, headroom_ramp: 0.15, perf_floor: 0.35, perf_ceil: 1.0, perf_init: 0.60, up_jump_threshold: 0.35, slow_up_scale: 0.02, slow_down_scale: 0.5, down_fast_threshold: 0.10, down_fast_mult: 2.5, spike_jump_threshold: 0.35, spike_decay: 0.30 }
   },
   fast: {
-    cpu_load_governor: { up_threshold: 0.01, down_threshold: 0.01, smoothing_up: 1.0, smoothing_down: 0.01, down_rate_limit_ticks: 10, headroom_factor: 2.0, headroom_ramp: 0.15, perf_floor: 1.0, perf_ceil: 1.0, perf_init: 1.0, up_jump_threshold: 0.35, slow_up_scale: 0.02, slow_down_scale: 0.5, down_fast_threshold: 0.10, down_fast_mult: 2.5 }
+    cpu_load_governor: { up_threshold: 0.01, down_threshold: 0.01, smoothing_up: 1.0, smoothing_down: 0.01, down_rate_limit_ticks: 10, headroom_factor: 2.0, headroom_ramp: 0.15, perf_floor: 1.0, perf_ceil: 1.0, perf_init: 1.0, up_jump_threshold: 0.35, slow_up_scale: 0.02, slow_down_scale: 0.5, down_fast_threshold: 0.10, down_fast_mult: 2.5, spike_jump_threshold: 0.35, spike_decay: 0.30 }
   }
 };
 
