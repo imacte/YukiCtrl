@@ -30,9 +30,10 @@ use crate::fluent_args;
 
 struct PolicyRestore {
     policy_id: i32,
-    governor: String,
-    min_freq: u32,
-    max_freq: u32,
+    /// 读取失败时为 None，恢复时跳过该字段，不写退化值
+    governor: Option<String>,
+    min_freq: Option<u32>,
+    max_freq: Option<u32>,
     /// 该 policy 的硬件最大可用频率，恢复时先放宽上限到它
     hw_max: u32,
 }
@@ -186,18 +187,16 @@ impl CpuLoadGovernor {
 
             // 记录系统原始状态（每个将被接管的 policy 单独记录），release 时恢复。
             // 必须位于 governor 写入之前，确保 release 能还原所有被接管的 cluster。
-            let governor = fs::read_to_string(&gov_path)
-                .unwrap_or_default()
-                .trim()
-                .to_string();
-            let min_freq = fs::read_to_string(&min_path)
-                .ok()
-                .and_then(|s| s.trim().parse::<u32>().ok())
-                .unwrap_or(0);
-            let max_freq = fs::read_to_string(&max_path)
-                .ok()
-                .and_then(|s| s.trim().parse::<u32>().ok())
-                .unwrap_or(0);
+            // 读取失败记录为 None：恢复时跳过对应字段，避免写退化值（如 0）。
+            let governor = fs::read_to_string(&gov_path).ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            let min_freq = fs::read_to_string(&min_path).ok()
+                .and_then(|s| s.trim().parse::<u32>().ok());
+            let max_freq = fs::read_to_string(&max_path).ok()
+                .and_then(|s| s.trim().parse::<u32>().ok());
+            // 同 policy 只保留最新快照（覆盖上次恢复失败遗留的旧记录）
+            self.restore.retain(|r| r.policy_id != pid);
             self.restore.push(PolicyRestore {
                 policy_id: pid,
                 governor,
@@ -254,11 +253,9 @@ impl CpuLoadGovernor {
 
     pub fn release(&mut self) {
         if self.active { info!("{}", t("clg-deactivated")); }
-        // 恢复系统原始状态，避免 release 后 CPU 悬停在 CLG 最后写入的值上
-        for r in &self.restore {
-            Self::restore_policy(r);
-        }
-        self.restore.clear();
+        // 恢复系统原始状态，避免 release 后 CPU 悬停在 CLG 最后写入的值上。
+        // 恢复失败的条目保留，下次 release/init 时重试，避免静默漂移。
+        self.restore.retain(|r| !Self::restore_policy(r));
         self.clusters.clear();
         self.active = false;
         self.log_counter = 0;
@@ -275,23 +272,22 @@ impl CpuLoadGovernor {
         )));
     }
 
-    /// 校验并规范化配置：防止 perf_floor > perf_ceil 导致 f32::clamp panic
+    /// 校验并规范化配置：防止 perf_floor > perf_ceil / NaN 导致 f32::clamp panic
     fn normalize_cfg(&mut self) {
-        let cfg = &mut self.cfg;
-        if cfg.perf_floor > cfg.perf_ceil {
+        let floor = self.cfg.perf_floor;
+        let ceil = self.cfg.perf_ceil;
+        if floor.is_finite() && ceil.is_finite() && floor > ceil {
             warn!("{}", t_with_args("clg-perf-clamped", &fluent_args!(
-                "floor" => format!("{:.2}", cfg.perf_floor),
-                "ceil" => format!("{:.2}", cfg.perf_ceil)
+                "floor" => format!("{:.2}", floor),
+                "ceil" => format!("{:.2}", ceil)
             )));
-            cfg.perf_floor = cfg.perf_ceil;
         }
-        cfg.perf_floor = cfg.perf_floor.clamp(0.0, 1.0);
-        cfg.perf_ceil = cfg.perf_ceil.clamp(0.0, 1.0);
-        cfg.perf_init = cfg.perf_init.clamp(cfg.perf_floor, cfg.perf_ceil);
+        self.cfg.normalize();
     }
 
-    /// 将单个 policy 恢复为接管前的原始状态
-    fn restore_policy(r: &PolicyRestore) {
+    /// 将单个 policy 恢复为接管前的原始状态。
+    /// 返回是否全部写入成功：失败时返回 false，调用方保留快照以便重试。
+    fn restore_policy(r: &PolicyRestore) -> bool {
         let gov_path = format!(
             "/sys/devices/system/cpu/cpufreq/policy{}/scaling_governor", r.policy_id);
         let min_path = format!(
@@ -299,20 +295,37 @@ impl CpuLoadGovernor {
         let max_path = format!(
             "/sys/devices/system/cpu/cpufreq/policy{}/scaling_max_freq", r.policy_id);
 
+        let mut all_ok = true;
         // 写序保证任意中间状态均满足 min <= max：
-        // 1) 恢复 governor；2) 上限先放宽到硬件最大值（恒 >= 当前下限）；
-        // 3) 恢复下限；4) 恢复上限。各步均容忍失败，失败时保持现状并记 warn。
-        let _ = crate::utils::try_write_file(&gov_path, r.governor.as_bytes());
-        let _ = crate::utils::try_write_file(&max_path, r.hw_max.to_string());
-        let _ = crate::utils::try_write_file(&min_path, r.min_freq.to_string());
-        let _ = crate::utils::try_write_file(&max_path, r.max_freq.to_string());
+        // 1) 恢复 governor（读取失败为 None 时跳过，保持现状）；
+        // 2) 上限先放宽到硬件最大值（恒 >= 当前下限）；
+        // 3) 恢复下限；4) 恢复上限。各步失败均记录，由调用方决定重试。
+        if let Some(gov) = &r.governor {
+            if crate::utils::write_to_file(&gov_path, gov.as_bytes()).is_err() {
+                all_ok = false;
+            }
+        }
+        if crate::utils::write_to_file(&max_path, r.hw_max.to_string()).is_err() {
+            all_ok = false;
+        }
+        if let Some(min) = r.min_freq {
+            if crate::utils::write_to_file(&min_path, min.to_string()).is_err() {
+                all_ok = false;
+            }
+        }
+        if let Some(max) = r.max_freq {
+            if crate::utils::write_to_file(&max_path, max.to_string()).is_err() {
+                all_ok = false;
+            }
+        }
 
         debug!("{}", t_with_args("clg-restore", &fluent_args!(
             "pid" => r.policy_id.to_string(),
-            "governor" => r.governor.clone(),
-            "min" => r.min_freq.to_string(),
-            "max" => r.max_freq.to_string()
+            "governor" => r.governor.clone().unwrap_or_else(|| "<unread>".to_string()),
+            "min" => r.min_freq.map(|v| v.to_string()).unwrap_or_else(|| "<unread>".to_string()),
+            "max" => r.max_freq.map(|v| v.to_string()).unwrap_or_else(|| "<unread>".to_string())
         )));
+        all_ok
     }
 
     pub fn on_load_update(&mut self, core_utils: &[f32]) {

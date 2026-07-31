@@ -218,7 +218,11 @@ impl FasController {
         } else {
             (self.cfg.max_inc_normal * scale).max(0.065)
         };
-        if self.perf_index > old_perf + max_inc { self.perf_index = old_perf + max_inc; }
+        // floor-rescue 是死锁自救：必须能真正跳出 perf_floor，
+        // 否则会被 max_inc 截断成一次无效的小幅抬升
+        if act != "floor-rescue" && self.perf_index > old_perf + max_inc {
+            self.perf_index = old_perf + max_inc;
+        }
         if damped && self.perf_index > self.cfg.damped_perf_cap {
             self.perf_index = self.cfg.damped_perf_cap;
         }

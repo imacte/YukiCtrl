@@ -213,6 +213,63 @@ fn d_temp_perf() -> f32 { 0.70 }
 fn d_util_cap_divisor() -> f32 { 0.45 }
 
 impl FasRulesConfig {
+    /// 校验并规范化配置：
+    /// - 非有限值（NaN/±Inf）回退默认，防止污染 PID 控制链
+    /// - perf_floor/ceil/init/cold_boot 交叉约束，保证 f32::clamp 永不 panic
+    /// - fast_decay 步长 min<=max
+    /// - fps_gears 过滤非法值（0/负/NaN），空时回退默认档位
+    pub fn normalize(&mut self) {
+        if !self.perf_floor.is_finite() { self.perf_floor = d_perf_floor(); }
+        if !self.perf_ceil.is_finite() { self.perf_ceil = d_perf_ceil(); }
+        if !self.perf_init.is_finite() { self.perf_init = d_perf_init(); }
+        if !self.perf_cold_boot.is_finite() { self.perf_cold_boot = d_perf_cold(); }
+        if !self.fast_decay_max_step.is_finite() { self.fast_decay_max_step = d_fd_max(); }
+        if !self.fast_decay_min_step.is_finite() { self.fast_decay_min_step = d_fd_min(); }
+        if !self.freq_hysteresis.is_finite() { self.freq_hysteresis = d_hysteresis(); }
+        if !self.max_inc_normal.is_finite() { self.max_inc_normal = d_max_inc_n(); }
+        if !self.max_inc_damped.is_finite() { self.max_inc_damped = d_max_inc_d(); }
+        if !self.damped_perf_cap.is_finite() { self.damped_perf_cap = d_damped_cap(); }
+        if !self.pid.kp.is_finite() { self.pid.kp = default_kp(); }
+        if !self.pid.ki.is_finite() { self.pid.ki = default_ki(); }
+        if !self.pid.kd.is_finite() { self.pid.kd = default_kd(); }
+
+        // fps_gears 过滤非法值，空时回退默认档位
+        self.fps_gears.retain(|&g| g.is_finite() && g > 0.0);
+        if self.fps_gears.is_empty() {
+            self.fps_gears = default_fps_gears();
+        }
+        // per-app 的 target_fps 同理过滤（set_game 时直接使用，绕过顶层过滤）
+        for profile in self.per_app_profiles.values_mut() {
+            if let Some(gears) = &mut profile.target_fps {
+                gears.retain(|&g| g.is_finite() && g > 0.0);
+                if gears.is_empty() {
+                    profile.target_fps = None;
+                }
+            }
+        }
+
+        // perf 交叉约束（顺序保证 clamp 边界合法）
+        self.perf_floor = self.perf_floor.clamp(0.0, 1.0);
+        self.perf_ceil = self.perf_ceil.clamp(0.0, 1.0);
+        if self.perf_floor > self.perf_ceil {
+            self.perf_floor = self.perf_ceil;
+        }
+        self.perf_init = self.perf_init.clamp(self.perf_floor, self.perf_ceil);
+        self.perf_cold_boot = self.perf_cold_boot.clamp(self.perf_floor, self.perf_ceil);
+        self.loading_perf_floor = self.loading_perf_floor.clamp(self.perf_floor, self.perf_ceil);
+        self.loading_perf_ceiling = self.loading_perf_ceiling.clamp(self.perf_floor, self.perf_ceil);
+        self.post_loading_perf = self.post_loading_perf.clamp(self.perf_floor, self.perf_ceil);
+        self.damped_perf_cap = self.damped_perf_cap.clamp(self.perf_floor, self.perf_ceil);
+
+        // fast_decay 步长约束：min <= max*0.6（decay_scale 最坏 0.6），
+        // 否则 frame_pipeline 的 clamp 边界可能反转导致 panic
+        self.fast_decay_max_step = self.fast_decay_max_step.max(0.0);
+        self.fast_decay_min_step = self.fast_decay_min_step.max(0.0);
+        if self.fast_decay_min_step > self.fast_decay_max_step * 0.6 {
+            self.fast_decay_min_step = self.fast_decay_max_step * 0.6;
+        }
+    }
+
     /// 将旧的 per_app_margins 迁移到 per_app_profiles
     pub fn migrate_legacy_margins(&mut self) {
         for (pkg, margin) in self.per_app_margins.drain() {

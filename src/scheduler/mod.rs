@@ -125,6 +125,8 @@ pub fn start_scheduler_thread(rx: mpsc::Receiver<DaemonEvent>) -> Result<()> {
             loop {
                 if let Err(e) = utils::watch_path(&config_dir) {
                     log::error!("{}", t_with_args("config-watch-error", &fluent_args!("error" => e.to_string())));
+                    // 退避后再重试，避免持续错误时忙循环刷 CPU
+                    thread::sleep(std::time::Duration::from_secs(2));
                     continue;
                 }
                 log::info!("{}", t("config-reloading"));
@@ -184,7 +186,12 @@ pub fn start_scheduler_thread(rx: mpsc::Receiver<DaemonEvent>) -> Result<()> {
             let mut last_temp_update = Instant::now();
 
             let get_clg_cfg = |config: &Config, mode: &str| -> crate::scheduler::config::CpuLoadGovernorConfig {
-                config.get_mode(mode).map(|m| m.cpu_load_governor.clone()).unwrap_or_default()
+                config.get_mode(mode).map(|m| m.cpu_load_governor.clone()).unwrap_or_else(|| {
+                    // 未知/空模式名：不意外启用 CLG，避免用默认参数接管 CPU
+                    let mut cfg = crate::scheduler::config::CpuLoadGovernorConfig::default();
+                    cfg.enabled = false;
+                    cfg
+                })
             };
 
             // 启动时初始化
@@ -200,6 +207,9 @@ pub fn start_scheduler_thread(rx: mpsc::Receiver<DaemonEvent>) -> Result<()> {
                 }
             }
             
+            // 事件循环包在 catch_unwind 中：任何 panic 都被捕获并记录，
+            // 避免调度线程静默死亡（进程存活但频率停在最后状态）
+            let loop_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             for msg in rx {
                 match msg {
                     // --- 1. 屏幕状态事件 (息屏深度睡眠) ---
@@ -387,7 +397,15 @@ pub fn start_scheduler_thread(rx: mpsc::Receiver<DaemonEvent>) -> Result<()> {
                     }
                 }
             }
+            }));
+            if loop_result.is_err() {
+                log::error!("{}", t("scheduler-ipc-panic"));
+            }
             log::warn!("{}", t("scheduler-channel-closed"));
+            // 收尾：无论 channel 关闭还是 panic，都恢复 CPU 控制状态，避免频率/governor 残留
+            cpu_governor.release();
+            fas_controller.reset_all_freqs();
+            fas_controller.clear_game();
         })?;
 
     Ok(())

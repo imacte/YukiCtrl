@@ -54,6 +54,7 @@ scheduler-ipc-started = [Scheduler] IPC 通道监听器已启动
 scheduler-mode-change-request = [Scheduler] 模式变更请求: { $old } -> { $new } (包名: { $pkg }, 温度: { $temp })
 scheduler-apply-failed = [Scheduler] 应用设置失败: { $error }
 scheduler-channel-closed = [Scheduler] 通道已关闭！线程退出
+scheduler-ipc-panic = [Scheduler] IPC 线程发生 panic，正在释放 CPU 控制权。
 scheduler-doze-enable = [Scheduler] 息屏: 启用极致深度睡眠模式 (限制 CPU 最高性能)。
 scheduler-doze-restore = [Scheduler] 亮屏: 恢复之前的性能限制。
 scheduler-clg-init = [Scheduler] CPU 负载调频器: 在启动时初始化 (模式={ $mode })

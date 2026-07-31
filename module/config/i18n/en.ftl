@@ -55,6 +55,7 @@ scheduler-ipc-started = [Scheduler] IPC Channel listener started.
 scheduler-mode-change-request = [Scheduler] Mode change request: { $old } -> { $new } (Pkg: { $pkg }, Temp: { $temp })
 scheduler-apply-failed = [Scheduler] Failed to apply settings: { $error }
 scheduler-channel-closed = [Scheduler] Channel closed! Thread exiting.
+scheduler-ipc-panic = [Scheduler] IPC thread panicked, releasing CPU control.
 scheduler-doze-enable = [Scheduler] Screen OFF: Enabling Extreme Doze mode (Restricting CPU max performance).
 scheduler-doze-restore = [Scheduler] Screen ON: Restoring previous performance constraints.
 scheduler-clg-init = [Scheduler] CPU Load Governor: initialized at startup (mode={ $mode })

@@ -31,6 +31,11 @@ use super::FasController;
 impl FasController {
     /// 热重载规则
     pub fn reload_rules(&mut self, new_rules: &FasRulesConfig) {
+        // 规范化配置（防 NaN/越界导致 clamp panic），遮蔽原引用使后续代码一致
+        let mut rules = new_rules.clone();
+        rules.normalize();
+        let new_rules = &rules;
+
         let old_kp = self.cfg.pid.kp;
         let old_ki = self.cfg.pid.ki;
         let old_kd = self.cfg.pid.kd;
@@ -205,6 +210,11 @@ impl FasController {
     // ════════════════════════════════════════════════════════════
 
     pub fn load_policies(&mut self, fas_rules: &FasRulesConfig) {
+        // 规范化配置（防 NaN/越界导致 clamp panic），遮蔽原引用使后续代码一致
+        let mut rules = fas_rules.clone();
+        rules.normalize();
+        let fas_rules = &rules;
+
         self.policies.clear();
         self.cfg = fas_rules.clone();
         self.cfg.migrate_legacy_margins();

@@ -47,7 +47,16 @@ fn load_bundle(lang: &str) -> Result<FluentBundle<FluentResource, IntlLangMemoiz
     let resource = FluentResource::try_new(ftl_string)
         .map_err(|e| anyhow::anyhow!("Failed to parse FTL resource {:?}: {:?}", ftl_path, e))?;
 
-    let mut bundle = FluentBundle::new_concurrent(vec![lang.parse().unwrap()]);
+    // 5. 解析语言标签；非法标签回退 "en"，避免 parse().unwrap() panic
+    //    （类型由 FluentBundle 的 locale 参数推断，无需直接依赖 unic-langid）
+    let langid = match lang.parse() {
+        Ok(id) => id,
+        Err(_) => {
+            log::warn!("[i18n] Invalid language tag '{}', falling back to 'en'", lang);
+            "en".parse().unwrap()
+        }
+    };
+    let mut bundle = FluentBundle::new_concurrent(vec![langid]);
 
     bundle.add_resource(resource)
         .map_err(|e| anyhow::anyhow!("Failed to add FTL resource: {:?}", e))?;

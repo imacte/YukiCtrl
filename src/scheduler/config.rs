@@ -103,6 +103,58 @@ impl Default for CpuLoadGovernorConfig {
     }
 }
 
+impl CpuLoadGovernorConfig {
+    /// 校验并规范化配置：
+    /// - 非有限值（NaN/±Inf，如 YAML 溢出值）回退默认，防止污染控制链
+    /// - 阈值/系数限制在合理区间
+    /// - floor/ceil/init 交叉约束，保证 f32::clamp 永不 panic
+    pub fn normalize(&mut self) {
+        if !self.up_threshold.is_finite() { self.up_threshold = d_clg_up_thresh(); }
+        if !self.down_threshold.is_finite() { self.down_threshold = d_clg_down_thresh(); }
+        if !self.smoothing_up.is_finite() { self.smoothing_up = d_clg_smooth_up(); }
+        if !self.smoothing_down.is_finite() { self.smoothing_down = d_clg_smooth_down(); }
+        if !self.headroom_factor.is_finite() { self.headroom_factor = d_clg_headroom(); }
+        if !self.headroom_ramp.is_finite() { self.headroom_ramp = d_clg_headroom_ramp(); }
+        if !self.perf_floor.is_finite() { self.perf_floor = d_clg_floor(); }
+        if !self.perf_ceil.is_finite() { self.perf_ceil = d_clg_ceil(); }
+        if !self.perf_init.is_finite() { self.perf_init = d_clg_init(); }
+        if !self.up_jump_threshold.is_finite() { self.up_jump_threshold = d_clg_up_jump(); }
+        if !self.slow_up_scale.is_finite() { self.slow_up_scale = d_clg_slow_up_scale(); }
+        if !self.slow_down_scale.is_finite() { self.slow_down_scale = d_clg_slow_down_scale(); }
+        if !self.down_fast_threshold.is_finite() { self.down_fast_threshold = d_clg_down_fast_thresh(); }
+        if !self.down_fast_mult.is_finite() { self.down_fast_mult = d_clg_down_fast_mult(); }
+
+        // 区间限制（语义约束）
+        self.up_threshold = self.up_threshold.clamp(0.0, 1.0);
+        self.down_threshold = self.down_threshold.clamp(0.0, 1.0);
+        // 滞回语义：降频阈值不得高于升频阈值
+        if self.down_threshold > self.up_threshold {
+            self.down_threshold = self.up_threshold;
+        }
+        self.smoothing_up = self.smoothing_up.clamp(0.0, 1.0);
+        self.smoothing_down = self.smoothing_down.clamp(0.0, 1.0);
+        self.slow_up_scale = self.slow_up_scale.clamp(0.0, 1.0);
+        self.slow_down_scale = self.slow_down_scale.clamp(0.0, 1.0);
+        self.up_jump_threshold = self.up_jump_threshold.clamp(0.0, 1.0);
+        self.down_fast_threshold = self.down_fast_threshold.clamp(0.0, 1.0);
+        self.headroom_ramp = self.headroom_ramp.clamp(0.0, 1.0);
+        // headroom 语义 >= 1（余量放大），down_fast_mult 语义 >= 1（放大）
+        self.headroom_factor = self.headroom_factor.clamp(1.0, 3.0);
+        self.down_fast_mult = self.down_fast_mult.clamp(1.0, 10.0);
+
+        // 交叉约束（顺序保证 clamp 边界合法）
+        if self.perf_floor > self.perf_ceil {
+            self.perf_floor = self.perf_ceil;
+        }
+        self.perf_floor = self.perf_floor.clamp(0.0, 1.0);
+        self.perf_ceil = self.perf_ceil.clamp(0.0, 1.0);
+        if self.perf_floor > self.perf_ceil {
+            self.perf_floor = self.perf_ceil;
+        }
+        self.perf_init = self.perf_init.clamp(self.perf_floor, self.perf_ceil);
+    }
+}
+
 // ════════════════════════════════════════════════════════════════
 //  核心模式与杂项配置
 // ════════════════════════════════════════════════════════════════
