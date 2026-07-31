@@ -437,7 +437,7 @@ fast:
 | `perf_ceil` | float | 1.0 | Performance ceiling. |
 | `perf_init` | float | 0.50 | Initial performance value. |
 | `up_jump_threshold` | float | 0.35 | When target perf exceeds current perf by more than this amount, ramp up via the fast path. |
-| `slow_up_scale` | float | 0.02 | Scaling factor applied to smoothing_up when ramping up under low load (below up_threshold). |
+| `slow_up_scale` | float | 0.02 | Minimum ramp-up rate basis inside the hysteresis band (scaling of smoothing_up); the rate ramps linearly toward full speed as util approaches up_threshold, preventing slow mid-load ramp-up. |
 | `slow_down_scale` | float | 0.5 | Scaling factor applied to smoothing_down inside the hysteresis band (down_threshold..up_threshold), preventing high-freq lockup and hunting. |
 | `down_fast_threshold` | float | 0.10 | Fast ramp-down triggers when load drops below this value. |
 | `down_fast_mult` | float | 2.5 | Multiplier applied to smoothing_down for fast ramp-down. |

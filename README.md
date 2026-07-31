@@ -437,7 +437,7 @@ fast:
 | `perf_ceil` | float | 1.0 | 性能上限。 |
 | `perf_init` | float | 0.50 | 初始性能值。 |
 | `up_jump_threshold` | float | 0.35 | 目标性能超过当前性能的幅度大于此值时，按快速通道升频。 |
-| `slow_up_scale` | float | 0.02 | 低负载升频（负载未达 up_threshold）时对 smoothing_up 的缩放系数。 |
+| `slow_up_scale` | float | 0.02 | 滞回带内升频的最低速率基准（对 smoothing_up 的缩放）；速率随 util 接近 up_threshold 线性提升至全速，防止中等负载升频过慢。 |
 | `slow_down_scale` | float | 0.5 | 滞回带（down_threshold~up_threshold）内降频时对 smoothing_down 的缩放系数。 |
 | `down_fast_threshold` | float | 0.10 | 负载低于此值时触发快速降频。 |
 | `down_fast_mult` | float | 2.5 | 快速降频时对 smoothing_down 的放大倍数。 |

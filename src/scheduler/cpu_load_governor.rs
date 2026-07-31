@@ -364,7 +364,14 @@ impl CpuLoadGovernor {
                 if is_high_load || is_significant_jump {
                     cluster.current_perf += (target_perf - old_perf) * self.cfg.smoothing_up;
                 } else {
-                    cluster.current_perf += (target_perf - old_perf) * (self.cfg.smoothing_up * self.cfg.slow_up_scale); 
+                    // 滞回带内升频：速率随 util 接近 up_threshold 线性提升——
+                    // 低 util 端用 slow_up_scale 防抖，高 util 端逼近全速，
+                    // 避免中等负载（如 73%）下 0.008/tick 的慢速爬升导致体验卡顿
+                    let span = (self.cfg.up_threshold - self.cfg.down_threshold).max(1e-6);
+                    let gap = ((util - self.cfg.down_threshold) / span).clamp(0.0, 1.0);
+                    let speed = self.cfg.smoothing_up
+                        * (self.cfg.slow_up_scale + (1.0 - self.cfg.slow_up_scale) * gap);
+                    cluster.current_perf += (target_perf - old_perf) * speed; 
                 }
             } else {
                 cluster.up_wait = 0;
