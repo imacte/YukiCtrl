@@ -352,9 +352,15 @@ powersave:
     down_rate_limit_ticks: 2
     up_rate_limit_ticks: 2
     headroom_factor: 1.10
+    headroom_ramp: 0.15
     perf_floor: 0.10
     perf_ceil: 0.70
     perf_init: 0.30
+    up_jump_threshold: 0.35
+    slow_up_scale: 0.02
+    slow_down_scale: 0.5
+    down_fast_threshold: 0.10
+    down_fast_mult: 2.5
 
 # Balance — daily use
 balance:
@@ -366,9 +372,15 @@ balance:
     down_rate_limit_ticks: 3
     up_rate_limit_ticks: 2
     headroom_factor: 1.25
+    headroom_ramp: 0.15
     perf_floor: 0.15
     perf_ceil: 1.0
     perf_init: 0.50
+    up_jump_threshold: 0.35
+    slow_up_scale: 0.02
+    slow_down_scale: 0.5
+    down_fast_threshold: 0.10
+    down_fast_mult: 2.5
 
 # Performance — prioritize responsiveness
 performance:
@@ -380,9 +392,15 @@ performance:
     down_rate_limit_ticks: 5
     up_rate_limit_ticks: 2
     headroom_factor: 1.40
+    headroom_ramp: 0.15
     perf_floor: 0.35
     perf_ceil: 1.0
     perf_init: 0.60
+    up_jump_threshold: 0.35
+    slow_up_scale: 0.02
+    slow_down_scale: 0.5
+    down_fast_threshold: 0.10
+    down_fast_mult: 2.5
 
 # Fast — maximum performance
 fast:
@@ -394,23 +412,35 @@ fast:
     down_rate_limit_ticks: 10
     up_rate_limit_ticks: 2
     headroom_factor: 2.0
+    headroom_ramp: 0.15
     perf_floor: 1.0
     perf_ceil: 1.0
     perf_init: 1.0
+    up_jump_threshold: 0.35
+    slow_up_scale: 0.02
+    slow_down_scale: 0.5
+    down_fast_threshold: 0.10
+    down_fast_mult: 2.5
 ```
 
 | Parameter | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `up_threshold` | float | 0.80 | Ramps up frequency quickly when load exceeds this threshold. |
-| `down_threshold` | float | 0.50 | Allows frequency ramp-down when load drops below this threshold. |
+| `up_threshold` | float | 0.80 | Target perf gains headroom margin when load exceeds this threshold (headroom ramps smoothly near the threshold). |
+| `down_threshold` | float | 0.50 | Ramps down at normal rate when load drops below this threshold; slow ramp-down inside the hysteresis band to avoid high-freq lockup. |
 | `smoothing_up` | float | 0.60 | Ramp-up smoothing coefficient (larger = faster). |
 | `smoothing_down` | float | 0.30 | Ramp-down smoothing coefficient (larger = faster). |
 | `down_rate_limit_ticks` | int | 3 | Ramp-down rate limit (in ticks, each tick = 200ms). |
 | `up_rate_limit_ticks` | int | 2 | Ramp-up rate limit (in ticks). Boost only after N consecutive high-load ticks to prevent transient spikes. |
-| `headroom_factor` | float | 1.25 | Target perf = actual load × headroom, providing frequency margin. Only applied when load ≥ up_threshold. |
+| `headroom_factor` | float | 1.25 | Target perf = actual load × headroom, providing frequency margin; headroom transitions linearly near up_threshold to avoid step oscillation. |
+| `headroom_ramp` | float | 0.15 | Headroom transition width: as load rises from up_threshold - headroom_ramp to up_threshold, headroom ramps linearly from 1.0 to headroom_factor. |
 | `perf_floor` | float | 0.15 | Performance floor. |
 | `perf_ceil` | float | 1.0 | Performance ceiling. |
 | `perf_init` | float | 0.50 | Initial performance value. |
+| `up_jump_threshold` | float | 0.35 | When target perf exceeds current perf by more than this amount, ramp up via the fast path. |
+| `slow_up_scale` | float | 0.02 | Scaling factor applied to smoothing_up when ramping up under low load (below up_threshold). |
+| `slow_down_scale` | float | 0.5 | Scaling factor applied to smoothing_down inside the hysteresis band (down_threshold..up_threshold), preventing high-freq lockup and hunting. |
+| `down_fast_threshold` | float | 0.10 | Fast ramp-down triggers when load drops below this value. |
+| `down_fast_mult` | float | 2.5 | Multiplier applied to smoothing_down for fast ramp-down. |
 
 -----
 

@@ -352,9 +352,15 @@ powersave:
     down_rate_limit_ticks: 2
     up_rate_limit_ticks: 2
     headroom_factor: 1.10
+    headroom_ramp: 0.15
     perf_floor: 0.10
     perf_ceil: 0.70
     perf_init: 0.30
+    up_jump_threshold: 0.35
+    slow_up_scale: 0.02
+    slow_down_scale: 0.5
+    down_fast_threshold: 0.10
+    down_fast_mult: 2.5
 
 # 均衡模式 — 日常使用
 balance:
@@ -366,9 +372,15 @@ balance:
     down_rate_limit_ticks: 3
     up_rate_limit_ticks: 2
     headroom_factor: 1.25
+    headroom_ramp: 0.15
     perf_floor: 0.15
     perf_ceil: 1.0
     perf_init: 0.50
+    up_jump_threshold: 0.35
+    slow_up_scale: 0.02
+    slow_down_scale: 0.5
+    down_fast_threshold: 0.10
+    down_fast_mult: 2.5
 
 # 性能模式 — 优先响应
 performance:
@@ -380,9 +392,15 @@ performance:
     down_rate_limit_ticks: 5
     up_rate_limit_ticks: 2
     headroom_factor: 1.40
+    headroom_ramp: 0.15
     perf_floor: 0.35
     perf_ceil: 1.0
     perf_init: 0.60
+    up_jump_threshold: 0.35
+    slow_up_scale: 0.02
+    slow_down_scale: 0.5
+    down_fast_threshold: 0.10
+    down_fast_mult: 2.5
 
 # 极速模式 — 最大性能释放
 fast:
@@ -394,23 +412,35 @@ fast:
     down_rate_limit_ticks: 10
     up_rate_limit_ticks: 2
     headroom_factor: 2.0
+    headroom_ramp: 0.15
     perf_floor: 1.0
     perf_ceil: 1.0
     perf_init: 1.0
+    up_jump_threshold: 0.35
+    slow_up_scale: 0.02
+    slow_down_scale: 0.5
+    down_fast_threshold: 0.10
+    down_fast_mult: 2.5
 ```
 
 | 参数 | 类型 | 默认值 | 描述 |
 | :--- | :--- | :--- | :--- |
-| `up_threshold` | float | 0.80 | 负载超过此阈值时快速升频。 |
-| `down_threshold` | float | 0.50 | 负载低于此阈值时允许降频。 |
+| `up_threshold` | float | 0.80 | 负载超过此阈值时，目标性能带 headroom 余量（headroom 在阈值附近线性渐变）。 |
+| `down_threshold` | float | 0.50 | 负载低于此阈值时按正常速率降频；阈值之上（滞回带内）用慢速降频防抖，避免高频锁定。 |
 | `smoothing_up` | float | 0.60 | 升频平滑系数（越大越快）。 |
 | `smoothing_down` | float | 0.30 | 降频平滑系数（越大越快）。 |
 | `down_rate_limit_ticks` | int | 3 | 降频速率限制（tick 数，每 tick 200ms）。 |
 | `up_rate_limit_ticks` | int | 2 | 升频速率限制（tick 数）。连续 N tick 高负载才升频，防止瞬时毛刺。 |
-| `headroom_factor` | float | 1.25 | 目标性能 = 实际负载 × headroom，提供频率余量。仅在负载≥up_threshold 时生效。 |
+| `headroom_factor` | float | 1.25 | 目标性能 = 实际负载 × headroom，提供频率余量；headroom 在 up_threshold 附近线性渐变至该值，避免阶跃振荡。 |
+| `headroom_ramp` | float | 0.15 | headroom 过渡带宽度：负载从 up_threshold-headroom_ramp 升至 up_threshold 时，headroom 由 1.0 线性渐变至 headroom_factor。 |
 | `perf_floor` | float | 0.15 | 性能下限。 |
 | `perf_ceil` | float | 1.0 | 性能上限。 |
 | `perf_init` | float | 0.50 | 初始性能值。 |
+| `up_jump_threshold` | float | 0.35 | 目标性能超过当前性能的幅度大于此值时，按快速通道升频。 |
+| `slow_up_scale` | float | 0.02 | 低负载升频（负载未达 up_threshold）时对 smoothing_up 的缩放系数。 |
+| `slow_down_scale` | float | 0.5 | 滞回带（down_threshold~up_threshold）内降频时对 smoothing_down 的缩放系数。 |
+| `down_fast_threshold` | float | 0.10 | 负载低于此值时触发快速降频。 |
+| `down_fast_mult` | float | 2.5 | 快速降频时对 smoothing_down 的放大倍数。 |
 
 -----
 
