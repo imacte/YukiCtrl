@@ -297,7 +297,11 @@ pub fn app_detection_loop(
                 // 使用已获取的 config_snapshot，不再重复加锁
                 let new_mode = determine_mode(&config_snapshot, &final_pkg);
 
-                if last_mode != new_mode || force_refresh {
+                // force_refresh（配置重载/亮屏恢复）只驱动外层重新计算模式；
+                // 模式未变时不重发 ModeChange，避免 "balance -> balance" 冗余事件。
+                // 注意：同模式应用切换不发事件对 scheduler 无影响——CLG 按模式调频，
+                // FAS 是独立模式（进入必然伴随模式变化），温度刷新走 FrameUpdate。
+                if last_mode != new_mode {
                     info!("{}", t_with_args("app-detect-mode-change-pkg", &fluent_args!("old" => last_mode.clone(), "new" => new_mode.as_str(), "pkg" => final_pkg.as_str())));
                     // ModeChange 事件现在携带 pid 字段
                     let _ = tx.send(DaemonEvent::ModeChange {
