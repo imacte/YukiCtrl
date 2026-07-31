@@ -97,7 +97,7 @@ impl FasController {
             self.downgrade_boost_remaining = 0;
             let floor = self.effective_perf_floor();
             let ceil = self.effective_perf_ceil();
-            self.perf_index = self.cfg.post_loading_perf.clamp(floor, ceil);
+            self.perf_index = self.cfg.post_loading_perf.clamp(floor.min(ceil), ceil);
             self.post_loading_ignore = self.cfg.post_loading_ignore_frames;
             self.gear_dampen_frames = scale_frames(self.cfg.gear_dampen_frames, self.current_target_fps);
             self.post_loading_downgrade_guard = self.cfg.post_loading_downgrade_guard;
@@ -180,7 +180,7 @@ impl FasController {
             if s > 0.0005 { self.perf_index -= s; }
         }
 
-        self.perf_index = self.perf_index.clamp(floor, ceil);
+        self.perf_index = self.perf_index.clamp(floor.min(ceil), ceil);
     }
 
     fn update_stability_forgiveness(&mut self, avg_fps: f32) {

@@ -256,10 +256,21 @@ impl FasRulesConfig {
         }
         self.perf_init = self.perf_init.clamp(self.perf_floor, self.perf_ceil);
         self.perf_cold_boot = self.perf_cold_boot.clamp(self.perf_floor, self.perf_ceil);
+        if !self.loading_perf_floor.is_finite() { self.loading_perf_floor = d_load_pf(); }
+        if !self.loading_perf_ceiling.is_finite() { self.loading_perf_ceiling = d_load_pc(); }
+        if !self.post_loading_perf.is_finite() { self.post_loading_perf = d_post_perf(); }
+        if !self.core_temp_throttle_perf.is_finite() { self.core_temp_throttle_perf = d_temp_perf(); }
+        if !self.util_cap_divisor.is_finite() { self.util_cap_divisor = d_util_cap_divisor(); }
+        if !self.app_switch_resume_perf.is_finite() { self.app_switch_resume_perf = d_switch_perf(); }
+        // loading 上下限拍平，防止 frame_pipeline clamp(min>max) panic
+        if self.loading_perf_floor > self.loading_perf_ceiling {
+            self.loading_perf_floor = self.loading_perf_ceiling;
+        }
         self.loading_perf_floor = self.loading_perf_floor.clamp(self.perf_floor, self.perf_ceil);
         self.loading_perf_ceiling = self.loading_perf_ceiling.clamp(self.perf_floor, self.perf_ceil);
         self.post_loading_perf = self.post_loading_perf.clamp(self.perf_floor, self.perf_ceil);
         self.damped_perf_cap = self.damped_perf_cap.clamp(self.perf_floor, self.perf_ceil);
+        self.app_switch_resume_perf = self.app_switch_resume_perf.clamp(self.perf_floor, self.perf_ceil);
 
         // fast_decay 步长约束：min <= max*0.6（decay_scale 最坏 0.6），
         // 否则 frame_pipeline 的 clamp 边界可能反转导致 panic

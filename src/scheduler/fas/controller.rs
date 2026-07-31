@@ -331,7 +331,8 @@ impl FasController {
     pub(super) fn reset_runtime(&mut self) {
         let floor = self.effective_perf_floor();
         let ceil = self.effective_perf_ceil();
-        self.perf_index = self.cfg.perf_init.clamp(floor, ceil);
+        // effective floor 上限 0.45 可能超过低 perf_ceil 配置，min 保证 clamp 边界合法
+        self.perf_index = self.cfg.perf_init.clamp(floor.min(ceil), ceil);
         self.ema_actual_ms = 0.0;
         self.pid.reset();
         self.fps_window.clear();

@@ -205,7 +205,8 @@ impl FasController {
         };
 
         // Clamp (使用场景 override 的范围 + jank 保护地板)
-        self.perf_index = self.perf_index.clamp(effective_floor, ceil);
+        // effective floor 上限 0.45 可能超过低 perf_ceil 配置，min 保证 clamp 边界合法
+        self.perf_index = self.perf_index.clamp(effective_floor.min(ceil), ceil);
         // base * (fps/60)^0.3，高刷时允许更大的单帧增量。
         let scale = (self.current_target_fps / 60.0).powf(0.3).clamp(0.8, 1.8);
         // crit 和 emergency 不受常规 max_inc 限制，允许单帧大幅拉升
