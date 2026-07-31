@@ -19,19 +19,19 @@ LOG_FILE="$LOG_DIR/service.log"
 # 确保日志目录存在
 mkdir -p "$LOG_DIR"
 
-# 禁用 OPPO/OnePlus/Realme 的 Oiface
-if [ "$(getprop persist.sys.oiface.enable)" = "1" ]; then
-  setprop persist.sys.oiface.enable 0
-  echo "$(date): Oiface disabled." >> "$LOG_FILE"
-fi
+# 禁用 OPPO/OnePlus/Realme 的 Oiface（已注释）
+# if [ "$(getprop persist.sys.oiface.enable)" = "1" ]; then
+#   setprop persist.sys.oiface.enable 0
+#   echo "$(date): Oiface disabled." >> "$LOG_FILE"
+# fi
 
-# 禁用小米的 Joyose 服务
-PACKAGE_NAME="com.xiaomi.joyose"
-if pm list packages -e | grep -q "$PACKAGE_NAME"; then
-  pm disable-user "$PACKAGE_NAME" >/dev/null 2>&1
-  pm clear "$PACKAGE_NAME" >/dev/null 2>&1
-  echo "$(date): Joyose service disabled and data cleared." >> "$LOG_FILE"
-fi
+# 禁用小米的 Joyose 服务（已注释）
+# PACKAGE_NAME="com.xiaomi.joyose"
+# if pm list packages -e | grep -q "$PACKAGE_NAME"; then
+#   pm disable-user "$PACKAGE_NAME" >/dev/null 2>&1
+#   pm clear "$PACKAGE_NAME" >/dev/null 2>&1
+#   echo "$(date): Joyose service disabled and data cleared." >> "$LOG_FILE"
+# fi
 
 # 3. 清理旧进程
 killall -9 yumi > /dev/null 2>&1
