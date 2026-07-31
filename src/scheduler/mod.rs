@@ -236,7 +236,11 @@ pub fn start_scheduler_thread(rx: mpsc::Receiver<DaemonEvent>) -> Result<()> {
                             let clg_cfg = get_clg_cfg(&config_lock, &current_mode);
                             
                             if current_mode != "fas" {
-                                if clg_cfg.enabled { cpu_governor.init_policies(&clg_cfg); } 
+                                if clg_cfg.enabled {
+                                    // 息屏 doze 期间 CLG 仍持有 writer，热切换配置即可
+                                    if cpu_governor.is_active() { cpu_governor.reload_config(&clg_cfg); } 
+                                    else { cpu_governor.init_policies(&clg_cfg); }
+                                } 
                                 else { cpu_governor.release(); }
                             } else {
                                 cpu_governor.release(); 
@@ -305,7 +309,9 @@ pub fn start_scheduler_thread(rx: mpsc::Receiver<DaemonEvent>) -> Result<()> {
                                     let config_lock = config_clone.read().unwrap();
                                     let clg_cfg = get_clg_cfg(&config_lock, &mode);
                                     if clg_cfg.enabled {
-                                        cpu_governor.init_policies(&clg_cfg);
+                                        // CLG 已激活时热切换配置，避免同模式反复切换全量重建
+                                        if cpu_governor.is_active() { cpu_governor.reload_config(&clg_cfg); }
+                                        else { cpu_governor.init_policies(&clg_cfg); }
                                     } else {
                                         cpu_governor.release();
                                     }

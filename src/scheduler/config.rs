@@ -43,9 +43,23 @@ pub struct CpuLoadGovernorConfig {
     #[serde(default = "d_clg_down_rate")] pub down_rate_limit_ticks: u32,
     #[serde(default = "d_clg_up_rate")] pub up_rate_limit_ticks: u32,
     #[serde(default = "d_clg_headroom")] pub headroom_factor: f32,
+    /// headroom 在 up_threshold 附近的过渡带宽度：从 up_threshold - headroom_ramp
+    /// 到 up_threshold 线性由 1.0 渐变至 headroom_factor，避免阶跃导致振荡
+    #[serde(default = "d_clg_headroom_ramp")] pub headroom_ramp: f32,
     #[serde(default = "d_clg_floor")] pub perf_floor: f32,
     #[serde(default = "d_clg_ceil")] pub perf_ceil: f32,
     #[serde(default = "d_clg_init")] pub perf_init: f32,
+    /// 升频快速通道判定：target_perf 超过 current_perf 的幅度大于此值时直接快速升频
+    #[serde(default = "d_clg_up_jump")] pub up_jump_threshold: f32,
+    /// 低负载升频（负载未达 up_threshold 时）对 smoothing_up 的缩放系数
+    #[serde(default = "d_clg_slow_up_scale")] pub slow_up_scale: f32,
+    /// 滞回带内（down_threshold..up_threshold）降频时对 smoothing_down 的缩放系数，
+    /// 用于防抖并避免高频锁定
+    #[serde(default = "d_clg_slow_down_scale")] pub slow_down_scale: f32,
+    /// 极低负载阈值：util 低于此值触发快速降频
+    #[serde(default = "d_clg_down_fast_thresh")] pub down_fast_threshold: f32,
+    /// 快速降频时对 smoothing_down 的放大倍数
+    #[serde(default = "d_clg_down_fast_mult")] pub down_fast_mult: f32,
 }
 
 fn d_clg_up_thresh() -> f32 { 0.80 }
@@ -55,9 +69,15 @@ fn d_clg_smooth_down() -> f32 { 0.30 }
 fn d_clg_down_rate() -> u32 { 3 }
 fn d_clg_up_rate() -> u32 { 2 }
 fn d_clg_headroom() -> f32 { 1.25 }
+fn d_clg_headroom_ramp() -> f32 { 0.15 }
 fn d_clg_floor() -> f32 { 0.15 }
 fn d_clg_ceil() -> f32 { 1.0 }
 fn d_clg_init() -> f32 { 0.50 }
+fn d_clg_up_jump() -> f32 { 0.35 }
+fn d_clg_slow_up_scale() -> f32 { 0.02 }
+fn d_clg_slow_down_scale() -> f32 { 0.5 }
+fn d_clg_down_fast_thresh() -> f32 { 0.10 }
+fn d_clg_down_fast_mult() -> f32 { 2.5 }
 
 impl Default for CpuLoadGovernorConfig {
     fn default() -> Self {
@@ -70,9 +90,15 @@ impl Default for CpuLoadGovernorConfig {
             down_rate_limit_ticks: d_clg_down_rate(),
             up_rate_limit_ticks: d_clg_up_rate(),
             headroom_factor: d_clg_headroom(),
+            headroom_ramp: d_clg_headroom_ramp(),
             perf_floor: d_clg_floor(),
             perf_ceil: d_clg_ceil(),
             perf_init: d_clg_init(),
+            up_jump_threshold: d_clg_up_jump(),
+            slow_up_scale: d_clg_slow_up_scale(),
+            slow_down_scale: d_clg_slow_down_scale(),
+            down_fast_threshold: d_clg_down_fast_thresh(),
+            down_fast_mult: d_clg_down_fast_mult(),
         }
     }
 }
@@ -82,9 +108,8 @@ impl Default for CpuLoadGovernorConfig {
 // ════════════════════════════════════════════════════════════════
 
 #[derive(Debug, Deserialize, Default, Clone)]
-#[serde(rename_all = "PascalCase")]
 pub struct Mode {
-    #[serde(default)]
+    #[serde(default, alias = "CpuLoadGovernor")]
     pub cpu_load_governor: CpuLoadGovernorConfig,
 }
 

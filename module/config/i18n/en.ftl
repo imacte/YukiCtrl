@@ -78,7 +78,9 @@ clg-activated = [CLG] CPU Load Governor activated, taking over { $count } cluste
 clg-no-clusters = [CLG] CPU Load Governor: no valid clusters found, staying inactive
 clg-deactivated = [CLG] CPU Load Governor deactivated
 clg-config-reloaded = [CLG] config hot-reloaded | up={ $up } down={ $down } floor={ $floor } ceil={ $ceil }
-clg-tick-log = [CLG] P{ $pid } util={ $util }% perf={ $perf } freq={ $freq }kHz{ $boost }
+clg-perf-clamped = [CLG] config perf_floor > perf_ceil ({ $floor } > { $ceil }), clamped perf_floor to perf_ceil
+clg-restore = [CLG] P{ $pid } restored | governor={ $governor } min={ $min } kHz max={ $max } kHz
+clg-tick-log = [CLG] P{ $pid } util={ $util }% perf={ $perf } freq={ $freq }kHz boost={ $boost }kHz
 clg-writer-invalid = [CLG] P{ $pid } sysfs writer invalid (max_valid: { $max_valid }, min_valid: { $min_valid }), skipping.
 
 # --- FAS ---

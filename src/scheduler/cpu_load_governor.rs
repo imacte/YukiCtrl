@@ -25,6 +25,19 @@ use crate::i18n::{t, t_with_args};
 use crate::fluent_args;
 
 // ════════════════════════════════════════════════════════════════
+//  PolicyRestore — CLG 接管前的系统状态快照，release 时恢复
+// ════════════════════════════════════════════════════════════════
+
+struct PolicyRestore {
+    policy_id: i32,
+    governor: String,
+    min_freq: u32,
+    max_freq: u32,
+    /// 该 policy 的硬件最大可用频率，恢复时先放宽上限到它
+    hw_max: u32,
+}
+
+// ════════════════════════════════════════════════════════════════
 //  ClusterState — 单 cluster 运行时状态
 // ════════════════════════════════════════════════════════════════
 
@@ -33,8 +46,7 @@ struct ClusterState {
     affected_cpus: Vec<usize>,
     available_freqs: Vec<u32>,
     cached_ratios: Vec<f32>,
-    _freq_min: f32,
-    _freq_max: f32,
+    boost_max: u32,
     max_writer: FastWriter,
     min_writer: FastWriter,
     current_perf: f32,
@@ -92,6 +104,8 @@ impl ClusterState {
 
 pub struct CpuLoadGovernor {
     clusters: Vec<ClusterState>,
+    /// CLG 接管前的系统状态，release 时恢复（首次 init 时捕获）
+    restore: Vec<PolicyRestore>,
     cfg: CpuLoadGovernorConfig,
     active: bool,
     log_counter: u32,
@@ -101,6 +115,7 @@ impl CpuLoadGovernor {
     pub fn new() -> Self {
         Self {
             clusters: Vec::new(),
+            restore: Vec::new(),
             cfg: CpuLoadGovernorConfig::default(),
             active: false,
             log_counter: 0,
@@ -114,6 +129,7 @@ impl CpuLoadGovernor {
     pub fn init_policies(&mut self, gov_cfg: &CpuLoadGovernorConfig) {
         self.release();
         self.cfg = gov_cfg.clone();
+        self.normalize_cfg();
 
         let clusters = crate::scheduler::get_cpu_policies();
 
@@ -121,7 +137,10 @@ impl CpuLoadGovernor {
             let pid = policy.id;
             let gov_path = format!(
                 "/sys/devices/system/cpu/cpufreq/policy{}/scaling_governor", pid);
-            let _ = crate::utils::try_write_file(&gov_path, "performance");
+            let min_path = format!(
+                "/sys/devices/system/cpu/cpufreq/policy{}/scaling_min_freq", pid);
+            let max_path = format!(
+                "/sys/devices/system/cpu/cpufreq/policy{}/scaling_max_freq", pid);
 
             let freq_path = format!(
                 "/sys/devices/system/cpu/cpufreq/policy{}/scaling_available_frequencies", pid);
@@ -165,14 +184,38 @@ impl CpuLoadGovernor {
                 continue;
             }
 
+            // 记录系统原始状态（每个将被接管的 policy 单独记录），release 时恢复。
+            // 必须位于 governor 写入之前，确保 release 能还原所有被接管的 cluster。
+            let governor = fs::read_to_string(&gov_path)
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            let min_freq = fs::read_to_string(&min_path)
+                .ok()
+                .and_then(|s| s.trim().parse::<u32>().ok())
+                .unwrap_or(0);
+            let max_freq = fs::read_to_string(&max_path)
+                .ok()
+                .and_then(|s| s.trim().parse::<u32>().ok())
+                .unwrap_or(0);
+            self.restore.push(PolicyRestore {
+                policy_id: pid,
+                governor,
+                min_freq,
+                max_freq,
+                hw_max: *freqs.last().unwrap(),
+            });
+
+            let _ = crate::utils::try_write_file(&gov_path, "performance");
+
             let init_perf = self.cfg.perf_init.clamp(self.cfg.perf_floor, self.cfg.perf_ceil);
+            let boost_max = policy.boost_frequencies.iter().copied().max().unwrap_or(0);
             let mut cluster = ClusterState {
                 policy_id: pid,
                 affected_cpus: affected.clone(),
                 available_freqs: freqs,
                 cached_ratios,
-                _freq_min: fmin,
-                _freq_max: fmax,
+                boost_max,
                 max_writer,
                 min_writer,
                 current_perf: init_perf,
@@ -182,9 +225,12 @@ impl CpuLoadGovernor {
             };
 
             let init_freq = cluster.find_nearest_freq(init_perf);
-            cluster.max_writer.write_value_force(init_freq);
-            cluster.min_writer.write_value_force(init_freq);
-            cluster.current_freq = init_freq;
+            let init_ok = cluster.max_writer.write_value_force(init_freq)
+                && cluster.min_writer.write_value_force(init_freq);
+            // 仅两端均写入成功才缓存频率；失败保持 0，下次 tick write_freq 自动重试
+            if init_ok {
+                cluster.current_freq = init_freq;
+            }
 
             info!("{}", t_with_args("clg-init", &fluent_args!(
                 "pid" => pid.to_string(),
@@ -208,6 +254,11 @@ impl CpuLoadGovernor {
 
     pub fn release(&mut self) {
         if self.active { info!("{}", t("clg-deactivated")); }
+        // 恢复系统原始状态，避免 release 后 CPU 悬停在 CLG 最后写入的值上
+        for r in &self.restore {
+            Self::restore_policy(r);
+        }
+        self.restore.clear();
         self.clusters.clear();
         self.active = false;
         self.log_counter = 0;
@@ -215,7 +266,53 @@ impl CpuLoadGovernor {
 
     pub fn reload_config(&mut self, gov_cfg: &CpuLoadGovernorConfig) {
         self.cfg = gov_cfg.clone();
-        debug!("{}", t("clg-config-reloaded"));
+        self.normalize_cfg();
+        debug!("{}", t_with_args("clg-config-reloaded", &fluent_args!(
+            "up" => format!("{:.2}", self.cfg.up_threshold),
+            "down" => format!("{:.2}", self.cfg.down_threshold),
+            "floor" => format!("{:.2}", self.cfg.perf_floor),
+            "ceil" => format!("{:.2}", self.cfg.perf_ceil)
+        )));
+    }
+
+    /// 校验并规范化配置：防止 perf_floor > perf_ceil 导致 f32::clamp panic
+    fn normalize_cfg(&mut self) {
+        let cfg = &mut self.cfg;
+        if cfg.perf_floor > cfg.perf_ceil {
+            warn!("{}", t_with_args("clg-perf-clamped", &fluent_args!(
+                "floor" => format!("{:.2}", cfg.perf_floor),
+                "ceil" => format!("{:.2}", cfg.perf_ceil)
+            )));
+            cfg.perf_floor = cfg.perf_ceil;
+        }
+        cfg.perf_floor = cfg.perf_floor.clamp(0.0, 1.0);
+        cfg.perf_ceil = cfg.perf_ceil.clamp(0.0, 1.0);
+        cfg.perf_init = cfg.perf_init.clamp(cfg.perf_floor, cfg.perf_ceil);
+    }
+
+    /// 将单个 policy 恢复为接管前的原始状态
+    fn restore_policy(r: &PolicyRestore) {
+        let gov_path = format!(
+            "/sys/devices/system/cpu/cpufreq/policy{}/scaling_governor", r.policy_id);
+        let min_path = format!(
+            "/sys/devices/system/cpu/cpufreq/policy{}/scaling_min_freq", r.policy_id);
+        let max_path = format!(
+            "/sys/devices/system/cpu/cpufreq/policy{}/scaling_max_freq", r.policy_id);
+
+        // 写序保证任意中间状态均满足 min <= max：
+        // 1) 恢复 governor；2) 上限先放宽到硬件最大值（恒 >= 当前下限）；
+        // 3) 恢复下限；4) 恢复上限。各步均容忍失败，失败时保持现状并记 warn。
+        let _ = crate::utils::try_write_file(&gov_path, r.governor.as_bytes());
+        let _ = crate::utils::try_write_file(&max_path, r.hw_max.to_string());
+        let _ = crate::utils::try_write_file(&min_path, r.min_freq.to_string());
+        let _ = crate::utils::try_write_file(&max_path, r.max_freq.to_string());
+
+        debug!("{}", t_with_args("clg-restore", &fluent_args!(
+            "pid" => r.policy_id.to_string(),
+            "governor" => r.governor.clone(),
+            "min" => r.min_freq.to_string(),
+            "max" => r.max_freq.to_string()
+        )));
     }
 
     pub fn on_load_update(&mut self, core_utils: &[f32]) {
@@ -224,9 +321,13 @@ impl CpuLoadGovernor {
         for cluster in &mut self.clusters {
             let util = cluster.max_util(core_utils);
 
-            // headroom 仅在负载超过升频阈值时才生效，避免低负载放大
+            // headroom 在 up_threshold 附近线性过渡，避免阶跃导致的振荡
+            let ramp_start = self.cfg.up_threshold - self.cfg.headroom_ramp;
             let headroom = if util >= self.cfg.up_threshold {
                 self.cfg.headroom_factor
+            } else if util > ramp_start {
+                let t = ((util - ramp_start) / self.cfg.headroom_ramp.max(1e-6)).clamp(0.0, 1.0);
+                1.0 + (self.cfg.headroom_factor - 1.0) * t
             } else {
                 1.0
             };
@@ -245,25 +346,29 @@ impl CpuLoadGovernor {
                 }
 
                 let is_high_load = util >= self.cfg.up_threshold; 
-                let is_significant_jump = target_perf > old_perf + 0.35; 
+                let is_significant_jump = target_perf > old_perf + self.cfg.up_jump_threshold; 
 
                 if is_high_load || is_significant_jump {
                     cluster.current_perf += (target_perf - old_perf) * self.cfg.smoothing_up;
                 } else {
-                    cluster.current_perf += (target_perf - old_perf) * (self.cfg.smoothing_up * 0.02); 
+                    cluster.current_perf += (target_perf - old_perf) * (self.cfg.smoothing_up * self.cfg.slow_up_scale); 
                 }
             } else {
                 cluster.up_wait = 0;
                 cluster.down_wait += 1;
                 if cluster.down_wait >= self.cfg.down_rate_limit_ticks {
-                    if util < self.cfg.down_threshold {
-                        let active_smoothing_down = if util < 0.10 {
-                            self.cfg.smoothing_down * 2.5
-                        } else {
-                            self.cfg.smoothing_down
-                        };
-                        cluster.current_perf += (target_perf - old_perf) * active_smoothing_down;
-                    }
+                    // 降频门控：只要目标低于当前即可降，避免滞回带内锁死高位
+                    let active_smoothing_down = if util < self.cfg.down_fast_threshold {
+                        // 极低负载：快速回落
+                        self.cfg.smoothing_down * self.cfg.down_fast_mult
+                    } else if util < self.cfg.down_threshold {
+                        // 跌破降频阈值：正常速率降频
+                        self.cfg.smoothing_down
+                    } else {
+                        // 滞回带内（down_threshold..up_threshold）：慢速下探防抖
+                        self.cfg.smoothing_down * self.cfg.slow_down_scale
+                    };
+                    cluster.current_perf += (target_perf - old_perf) * active_smoothing_down;
                 }
             }
 
@@ -280,7 +385,7 @@ impl CpuLoadGovernor {
                     "util" => format!("{:.0}", c.max_util(core_utils) * 100.0),
                     "perf" => format!("{:.2}", c.current_perf),
                     "freq" => (c.current_freq / 1000).to_string(),
-                    "boost" => format!("{:.0}", c.available_freqs.last().copied().unwrap_or(0) as f32 / 1000.0)
+                    "boost" => format!("{:.0}", c.boost_max as f32 / 1000.0)
                 )));
             }
         }

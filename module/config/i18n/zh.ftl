@@ -77,7 +77,9 @@ clg-activated = [CLG] CPU 负载调频器已激活，共接管 { $count } 个集
 clg-no-clusters = [CLG] CPU 负载调频器: 未找到有效集群，保持未激活状态
 clg-deactivated = [CLG] CPU 负载调频器已停用
 clg-config-reloaded = [CLG] 配置已热重载 | 升频={ $up } 降频={ $down } 地板={ $floor } 天花板={ $ceil }
-clg-tick-log = [CLG] P{ $pid } 利用率={ $util }% perf={ $perf } 频率={ $freq }kHz{ $boost }
+clg-perf-clamped = [CLG] 配置 perf_floor > perf_ceil ({ $floor } > { $ceil })，已将 perf_floor 限制为 perf_ceil
+clg-restore = [CLG] P{ $pid } 已恢复 | governor={ $governor } min={ $min } kHz max={ $max } kHz
+clg-tick-log = [CLG] P{ $pid } 利用率={ $util }% perf={ $perf } 频率={ $freq }kHz boost={ $boost }kHz
 clg-writer-invalid = [CLG] P{ $pid } sysfs 写入器无效 (max_valid: { $max_valid }, min_valid: { $min_valid })，已跳过。
 
 # --- FAS ---
