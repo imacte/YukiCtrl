@@ -1,8 +1,16 @@
 use std::process::Command;
 use std::env;
 use std::path::PathBuf;
+use std::fs;
 
 /// 构建 yumi-ebpf BPF 程序，参照 frame-analyzer 的 build_ebpf()
+///
+/// Windows 适配说明 (ticket-02 baseline):
+///   上游 `cargo install bpf-linker --root <out>` 在 Linux 上可行,
+///   在 Windows 上会因为 `os::unix::ffi::OsStrExt` 缺 cfg(unix) gate 而编译失败.
+///   改用: 探测全局 PATH 是否已有 bpf-linker (我们 ticket 01 装好预编译到 ~/.cargo/bin/),
+///          若有, 把全局 binary 复制到 OUT_DIR\ebpf_tools\bin\ 作为后续 cargo build 的工具链,
+///          跳过 cargo install.
 fn build_ebpf() -> Result<PathBuf, Box<dyn std::error::Error>> {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let ebpf_dir = manifest_dir.join("yumi-ebpf");
@@ -15,15 +23,29 @@ fn build_ebpf() -> Result<PathBuf, Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed={}", ebpf_dir.join("Cargo.toml").display());
     println!("cargo:rerun-if-changed={}", ebpf_dir.join("src").display());
 
-    // 1. 安装 bpf-linker（参照 frame-analyzer install_ebpf_linker）
-    Command::new("cargo")
-        .args([
-            "install", "bpf-linker", "--force",
-            "--root", tools_dir.to_str().unwrap(),
-            "--target-dir", tools_dir.to_str().unwrap(),
-        ])
-        .env_remove("RUSTUP_TOOLCHAIN")
-        .status()?;
+    fs::create_dir_all(&tools_bin)?;
+
+    // 1. 准备 bpf-linker
+    let global_linker = find_bpf_linker_global()?;
+    if let Some(global) = global_linker {
+        let target_exe = tools_bin.join(if cfg!(windows) { "bpf-linker.exe" } else { "bpf-linker" });
+        if !target_exe.exists() {
+            fs::copy(&global, &target_exe)
+                .map_err(|e| format!("failed to copy {} -> {}: {}", global.display(), target_exe.display(), e))?;
+        }
+        println!("cargo:warning=bpf-linker from {}", global.display());
+    } else {
+        // 回退: 走上游 cargo install (Linux 上才有意义)
+        println!("cargo:warning=bpf-linker not in PATH, falling back to `cargo install bpf-linker` (likely fails on Windows)");
+        Command::new("cargo")
+            .args([
+                "install", "bpf-linker", "--force",
+                "--root", tools_dir.to_str().unwrap(),
+                "--target-dir", tools_dir.to_str().unwrap(),
+            ])
+            .env_remove("RUSTUP_TOOLCHAIN")
+            .status()?;
+    }
 
     // 2. 编译 BPF 程序（在 yumi-ebpf 目录中，避免 workspace 干扰）
     let mut ebpf_args = vec![
@@ -35,6 +57,9 @@ fn build_ebpf() -> Result<PathBuf, Box<dyn std::error::Error>> {
     #[cfg(not(debug_assertions))]
     ebpf_args.push("--release");
 
+    // LLVM 22+ 已移除 `-Oz`; 通过 workspace Cargo.toml 中
+    // `[profile.release.package."yumi-ebpf"]` 覆盖 opt-level=2 避开 bpf-linker
+    // 把废弃 flag 传给 LLVM.
     let status = Command::new("cargo")
         .arg("build")
         .args(&ebpf_args)
@@ -59,6 +84,26 @@ fn build_ebpf() -> Result<PathBuf, Box<dyn std::error::Error>> {
         .join("yumi-ebpf"); // binary crate 保留原始包名中的连字符
 
     Ok(built_obj)
+}
+
+/// 在 PATH (含 ~/.cargo/bin) 中查找 bpf-linker, Windows 上要 .exe
+fn find_bpf_linker_global() -> Result<Option<PathBuf>, Box<dyn std::error::Error>> {
+    let exe_name = if cfg!(windows) { "bpf-linker.exe" } else { "bpf-linker" };
+    let path_var = env::var("PATH")?;
+    for dir in env::split_paths(&path_var) {
+        let candidate = dir.join(exe_name);
+        if candidate.is_file() {
+            return Ok(Some(candidate));
+        }
+    }
+    // 还查一下 ~/.cargo/bin 直接路径 (PATH 可能因 shell 隔离被忽略)
+    if let Some(home) = env::var_os("USERPROFILE").or_else(|| env::var_os("HOME")) {
+        let direct = PathBuf::from(home).join(".cargo").join("bin").join(exe_name);
+        if direct.is_file() {
+            return Ok(Some(direct));
+        }
+    }
+    Ok(None)
 }
 
 fn add_path(add: &std::path::Path) -> Result<String, std::env::VarError> {

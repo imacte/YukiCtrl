@@ -51,3 +51,15 @@ strip = true
 opt-level = "z"
 lto = true
 codegen-units = 1
+
+# ticket-02 baseline: BPF programs in yumi-ebpf use LLVM 22+ which removed the
+# `Oz` optimization level. bpf-linker 0.11 passes `-Oz` to LLVM when opt-level=z
+# is requested, which LLVM 22+ rejects with:
+#   "The optimization level 'Oz' is no longer supported. Use O2 in conjunction
+#    with the minsize attribute instead."
+# Override opt-level for the eBPF crate only; main crate stays size-optimized.
+# (lto/strip are not allowed inside `package.` profile; rely on workspace lto=false
+# for ebpf by leaving them off here. workspace strip=true still applies; OK for bpf.)
+[profile.release.package."yumi-ebpf"]
+opt-level = 2
+codegen-units = 256
