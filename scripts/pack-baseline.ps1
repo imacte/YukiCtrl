@@ -24,11 +24,23 @@ $binPath = Join-Path $temp 'core\bin'
 New-Item -ItemType Directory -Path $binPath -Force | Out-Null
 Copy-Item -Path $core -Destination (Join-Path $binPath 'yumi') -Force
 
-# webroot dir: build via npm OR include source as a fallback. We'll skip webui
-# build and create an empty dist so the package layout matches what xtask produces.
+# webroot dir: copy contents of webui/dist/ (built via npm run build earlier)
+$dist = Join-Path $root 'webui\dist'
 $webroot = Join-Path $temp 'webroot'
 New-Item -ItemType Directory -Path $webroot -Force | Out-Null
-"<!doctype html><html><body><p>yumi baseline - webui not built in ticket-02 dry-run. Run 'npm run build' in webui/ to populate this dir.</p></body></html>" | Out-File -Encoding utf8 -FilePath (Join-Path $webroot 'index.html')
+if (Test-Path $dist) {
+    foreach ($item in (Get-ChildItem $dist -Force)) {
+        $dest = Join-Path $webroot $item.Name
+        if ($item.PSIsContainer) {
+            Copy-Item -Path $item.FullName -Destination $dest -Recurse -Force
+        } else {
+            Copy-Item -Path $item.FullName -Destination $dest -Force
+        }
+    }
+    Write-Host "Copied webui/dist into webroot/" -ForegroundColor Green
+} else {
+    Write-Host "WARN: webui/dist not found, webroot/ will be empty" -ForegroundColor Yellow
+}
 
 # Pack zip like xtask
 $outputDir = Join-Path $root 'output'
