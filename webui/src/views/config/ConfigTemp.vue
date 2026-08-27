@@ -10,6 +10,7 @@ import { fetchHotplugConfig, saveHotplugConfig, type HotplugConfig } from '@/api
 import { fetchSenseSnapshot, type SenseResult } from '@/api/sense'
 import { TEMP_PARAM } from '@/config/moduleSpecs'
 import ParamRow from '@/components/ParamRow.vue'
+import ResetDefaultsBtn from '@/components/ResetDefaultsBtn.vue'
 
 const router = useRouter()
 const store = useSchedulerStore()
@@ -46,6 +47,11 @@ function persist() {
 
 function rowVal(p: typeof TEMP_PARAM) { return (hpCfg.value as any)?.[p.path] }
 function rowUpd(v: unknown) { if (hpCfg.value) { (hpCfg.value as any)[TEMP_PARAM.path] = v; persist() } }
+
+/** 恢复本模块默认: 保护温度线 70°C */
+function resetModuleDefaults() {
+  if (hpCfg.value) { hpCfg.value.thermal_force_all_on_c = 70; persist() }
+}
 
 onMounted(async () => {
   try {
@@ -90,6 +96,8 @@ onUnmounted(() => {
         />
 
         <p class="cfg-intro">触发后守护进程暂停一切关核动作直到温度回落; 该保护优先级最高。</p>
+
+        <ResetDefaultsBtn @reset="resetModuleDefaults" />
       </section>
     </div>
   </div>

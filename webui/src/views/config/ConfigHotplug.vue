@@ -10,9 +10,10 @@ import {
   fetchHotplugState, fetchHotplugConfig, saveHotplugConfig,
   sanitizeKeepCores, type HotplugState, type HotplugConfig,
 } from '@/api/hotplug'
-import { HOTPLUG_PARAMS, KEEP_DESC, LOCKSCREEN_DESC, SCREENS_OFF_DESC, type ParamSpec } from '@/config/moduleSpecs'
+import { HOTPLUG_PARAMS, KEEP_DESC, LOCKSCREEN_DESC, SCREENS_OFF_DESC, HOTPLUG_DEFAULTS, type ParamSpec } from '@/config/moduleSpecs'
 import ParamRow from '@/components/ParamRow.vue'
 import DescLines from '@/components/DescLines.vue'
+import ResetDefaultsBtn from '@/components/ResetDefaultsBtn.vue'
 
 const router = useRouter()
 const store = useSchedulerStore()
@@ -98,6 +99,12 @@ onUnmounted(() => {
 function rowSpec(p: ParamSpec) { return p }
 function rowVal(p: ParamSpec) { return (hpCfg.value as any)[p.path] }
 function rowUpd(p: ParamSpec, v: unknown) { (hpCfg.value as any)[p.path] = v; persistHp() }
+
+/** 恢复本模块默认: 核心开关全部参数 (含亮/息屏保留核心) */
+function resetModuleDefaults() {
+  hpCfg.value = JSON.parse(JSON.stringify(HOTPLUG_DEFAULTS))
+  persistHp()
+}
 </script>
 
 <template>
@@ -151,6 +158,8 @@ function rowUpd(p: ParamSpec, v: unknown) { (hpCfg.value as any)[p.path] = v; pe
           当前状态: {{ hpState?.screen_on ? '亮屏' : '息屏' }} · 在线 {{ onlineCount ?? '--' }}/8 ·
           生效白名单 [{{ activeKeepNums }}] · 温度 {{ hpState?.thermal_c?.toFixed(1) ?? '--' }}°C
         </div>
+
+        <ResetDefaultsBtn @reset="resetModuleDefaults" />
       </section>
     </div>
   </div>

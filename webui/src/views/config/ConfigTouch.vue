@@ -5,6 +5,13 @@ import { useRouter } from 'vue-router'
 import { fetchSenseSnapshot, type SenseResult } from '@/api/sense'
 import { TOUCH_DESC } from '@/config/moduleSpecs'
 import DescLines from '@/components/DescLines.vue'
+import ResetDefaultsBtn from '@/components/ResetDefaultsBtn.vue'
+
+const tipMsg = ref('')
+function resetModuleDefaults() {
+  tipMsg.value = '本模块为全自动触发, 没有可调参数, 已是默认状态'
+  setTimeout(() => { tipMsg.value = '' }, 2500)
+}
 
 const router = useRouter()
 const senseRes = ref<SenseResult | null>(null)
@@ -43,6 +50,9 @@ onUnmounted(() => { if (pollTimer !== null) window.clearInterval(pollTimer) })
         </div>
 
         <DescLines :desc="TOUCH_DESC" />
+
+        <div v-if="tipMsg" class="cfg-banner ok">{{ tipMsg }}</div>
+        <ResetDefaultsBtn @reset="resetModuleDefaults" />
 
         <p class="cfg-intro">验证方式: 手指按住屏幕滑动, 上方"当前触摸"应立即变为"按下中";
         松开后回到"未按下"。</p>

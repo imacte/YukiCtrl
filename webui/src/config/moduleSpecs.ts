@@ -109,6 +109,14 @@ export const MODE_HELP: Record<string, [string, string, string, string, string]>
 
 export const CLG_PARAMS: ParamSpec[] = [
   {
+    path: 'target_load', label: '目标负载', type: 'range', min: 5, max: 95, step: 1, unit: '%', fb: '60',
+    desc: ['帧平滑引擎的综合压力目标: CPU/显卡/内存压力高于它就提频, 低于它就省电。每个档位独立记忆。', 
+           '更激进: 轻度压力也开始拉频率, 帧率更稳但耗电增加。', 
+           '更保守: 允许更大的压力波动, 更省电但重负载可能掉帧。', 
+           '游戏帧率不稳 → 上调; 发热明显 → 下调。', 
+           '省电 40 / 均衡 60 / 性能 75 / 极速 85。'],
+  },
+  {
     path: 'up_threshold', label: '升频阈值', type: 'range', min: 0.5, max: 0.95, step: 0.01, scale: 100, fb: '0.8',
     desc: ['处理器利用率超过这个百分比, 才允许提高频率。是整套调速器最核心的灵敏度开关。',
            '更灵敏: 负载一涨就升频, 跟手、不卡, 但耗电增加、发热变大。',
@@ -141,6 +149,82 @@ export const CLG_PARAMS: ParamSpec[] = [
            '均衡 0.3; 重度游戏可降到 0.2。'],
   },
 ]
+
+/* ==================== 频率护栏 (处理器页, 亮屏/息屏两套) ==================== */
+
+export const FREQ_LIMIT_PARAMS: ParamSpec[] = [
+  {
+    path: 'screen_on_min_pct', label: '亮屏最低频率', type: 'range', min: 0, max: 100, step: 5, unit: '%', fb: '0',
+    desc: ['亮屏时处理器频率的下限 (相对最高频的百分比), 再闲也不低于这条线。', 
+           '低负载也不掉底频, 滑动点击零迟滞, 但待机功耗上升。', 
+           '空闲时充分降频省电, 突发操作开头可能慢半拍。', 
+           '亮屏打字卡顿 → 抬到 15~20; 追求省电 → 保持 0。', 
+           '0 (不限制)。'],
+  },
+  {
+    path: 'screen_on_max_pct', label: '亮屏最高频率', type: 'range', min: 20, max: 100, step: 5, unit: '%', fb: '100',
+    desc: ['亮屏时处理器频率的上限 (相对最高频的百分比), 再忙也不越过这条线。', 
+           '放开上限性能全释放, 发热耗电也随之增加。', 
+           '封顶限频明显省电降温, 重负载性能受影响。', 
+           '夏天日常 80% 就够; 跑分游戏保持 100。', 
+           '100 (不限制)。'],
+  },
+  {
+    path: 'screen_off_min_pct', label: '息屏最低频率', type: 'range', min: 0, max: 100, step: 5, unit: '%', fb: '0',
+    desc: ['黑屏待机时处理器频率的下限。', 
+           '后台任务 (音乐/下载) 更流畅, 但待机耗电增加。', 
+           '待机最省电; 极低频可能影响后台任务及时性。', 
+           '有黑屏听歌/导航需求 → 10~15。', 
+           '0 (不限制)。'],
+  },
+  {
+    path: 'screen_off_max_pct', label: '息屏最高频率', type: 'range', min: 10, max: 100, step: 5, unit: '%', fb: '100',
+    desc: ['黑屏待机时处理器频率的上限 — 息屏限频是最有效的省电手段之一。', 
+           '放宽到 100 = 黑屏也不限频, 后台全速但费电。', 
+           '压到 40~60% 黑屏耗电显著下降, 唤醒瞬间由亮屏护栏接管不受影响。', 
+           '夜间掉电快 → 压到 50; 有后台重任务 → 80。', 
+           '100 (不限制); 省电取向建议 60。'],
+  },
+]
+
+/* ==================== 默认值中心 (恢复按钮数据源, 与包内 config.yaml 逐字对齐) ==================== */
+
+/** 四档位调度默认值: 升频/降频/上行平滑/下行平滑/目标负载 */
+export const CLG_MODE_DEFAULTS: Record<string, Record<string, number>> = {
+  powersave:    { up_threshold: 0.85, down_threshold: 0.60, smoothing_up: 0.40, smoothing_down: 0.50, target_load: 40 },
+  balance:      { up_threshold: 0.80, down_threshold: 0.50, smoothing_up: 0.60, smoothing_down: 0.30, target_load: 60 },
+  performance:  { up_threshold: 0.65, down_threshold: 0.40, smoothing_up: 0.80, smoothing_down: 0.20, target_load: 75 },
+  fast:         { up_threshold: 0.01, down_threshold: 0.01, smoothing_up: 1.0,  smoothing_down: 0.01, target_load: 85 },
+}
+
+/** 频率护栏默认 (0/100 = 不限制) */
+export const FREQ_LIMIT_DEFAULTS: Record<string, number> = {
+  screen_on_min_pct: 0, screen_on_max_pct: 100, screen_off_min_pct: 0, screen_off_max_pct: 100,
+}
+
+/** 核心开关 (hotplug/config.yaml) 全量默认 */
+export const HOTPLUG_DEFAULTS = {
+  lockscreen_onoff: true,
+  screens_onoff: true,
+  off_threshold_idle_pct: 95,
+  on_threshold_util_pct: 30,
+  min_online_cores: 4,
+  thermal_force_all_on_c: 70,
+  screen_on_keep_cores: [0, 1, 2, 3, 4, 5] as number[],
+  screen_off_keep_cores: [0, 1] as number[],
+}
+
+/** 读写 (IO_Settings 内层, 注意值必须是字符串) */
+export const IO_DEFAULTS: Record<string, string> = {
+  Scheduler: '', read_ahead_kb: '128', nomerges: '2', iostats: '0',
+}
+
+/** 帧平滑 (rules.yaml fas_rules) 默认 */
+export const FAS_DEFAULTS: Record<string, unknown> = {
+  fps_margin: 3,
+  fps_gears: [30, 60, 90, 120],
+  'pid.kp': 0.5, 'pid.ki': 0.05, 'pid.kd': 0.1,
+}
 
 /* ==================== 读写 (橙色) — config.IO_Settings (注意 Scheduler 大写 S) ==================== */
 

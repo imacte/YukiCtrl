@@ -5,6 +5,13 @@ import { useRouter } from 'vue-router'
 import { fetchSenseSnapshot, type SenseResult } from '@/api/sense'
 import { SWAP_DESC } from '@/config/moduleSpecs'
 import DescLines from '@/components/DescLines.vue'
+import ResetDefaultsBtn from '@/components/ResetDefaultsBtn.vue'
+
+const tipMsg = ref('')
+function resetModuleDefaults() {
+  tipMsg.value = '本模块为全自动管理, 没有可调参数, 已是默认状态'
+  setTimeout(() => { tipMsg.value = '' }, 2500)
+}
 
 const router = useRouter()
 const senseRes = ref<SenseResult | null>(null)
@@ -45,6 +52,9 @@ onUnmounted(() => { if (pollTimer !== null) window.clearInterval(pollTimer) })
                       color="#10b981" style="margin-top: 10px;" />
 
         <DescLines :desc="SWAP_DESC" />
+
+        <div v-if="tipMsg" class="cfg-banner ok">{{ tipMsg }}</div>
+        <ResetDefaultsBtn @reset="resetModuleDefaults" />
 
         <p class="cfg-intro">压力指数 = 内核报告的内存阻塞时间占比 (10 秒窗口)。
         持续高于 20% 说明内存吃紧, 此时调度器会主动降频让路、系统会加大压缩交换。</p>

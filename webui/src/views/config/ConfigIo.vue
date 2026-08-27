@@ -3,14 +3,15 @@
   问题 4 修复落地页: 键名 IO_Settings.Scheduler (大写 S), read_ahead_kb/nomerges 保持字符串.
 -->
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import yaml from 'js-yaml'
 import { useSchedulerStore } from '@/stores/scheduler'
 import { Bridge } from '@/utils/bridge'
-import { IO_PARAMS, IO_OPT_DESC } from '@/config/moduleSpecs'
+import { IO_PARAMS, IO_OPT_DESC, IO_DEFAULTS } from '@/config/moduleSpecs'
 import ParamRow from '@/components/ParamRow.vue'
 import DescLines from '@/components/DescLines.vue'
+import ResetDefaultsBtn from '@/components/ResetDefaultsBtn.vue'
 
 const router = useRouter()
 const store = useSchedulerStore()
@@ -19,6 +20,7 @@ const mainCfg = ref<any>(null)
 const loading = ref(true)
 const errMsg = ref('')
 const okMsg = ref('')
+let saveTimer: number | null = null
 
 function getP(path: string): any {
   let cur = mainCfg.value
@@ -26,6 +28,7 @@ function getP(path: string): any {
   return cur
 }
 function setP(path: string, v: any) {
+  if (!mainCfg.value) return
   const keys = path.split('.')
   let cur = mainCfg.value
   for (let i = 0; i < keys.length - 1; i++) {
@@ -35,16 +38,29 @@ function setP(path: string, v: any) {
   cur[keys[keys.length - 1]] = v
 }
 
-async function saveMain() {
-  try {
-    await Bridge.saveMainConfig(yaml.load(yaml.dump(mainCfg.value)))
-    store.reportSave(true)
-    okMsg.value = '已保存, 约 1 秒内热生效'
-    setTimeout(() => { okMsg.value = '' }, 2500)
-  } catch (e) {
-    store.reportSave(false)
-    errMsg.value = String(e)
-  }
+/** 防抖自动保存: 改完 600ms 自动写盘, daemon inotify 约 1 秒热生效 */
+function persistMain() {
+  if (saveTimer !== null) window.clearTimeout(saveTimer)
+  saveTimer = window.setTimeout(async () => {
+    try {
+      await Bridge.saveMainConfig(yaml.load(yaml.dump(mainCfg.value)))
+      store.reportSave(true)
+      okMsg.value = '已生效'
+      setTimeout(() => { okMsg.value = '' }, 2000)
+    } catch (e) {
+      store.reportSave(false)
+      errMsg.value = String(e)
+    }
+  }, 600)
+}
+
+/** 恢复本模块默认: 读写三参数 + 总开关 (值必须保持字符串) */
+function resetModuleDefaults() {
+  if (!mainCfg.value) return
+  if (!mainCfg.value.IO_Settings) mainCfg.value.IO_Settings = {}
+  for (const [k, v] of Object.entries(IO_DEFAULTS)) mainCfg.value.IO_Settings[k] = v
+  setP('function.IOOptimization', true)
+  persistMain()
 }
 
 onMounted(async () => {
@@ -52,6 +68,7 @@ onMounted(async () => {
   catch (e) { errMsg.value = String(e); mainCfg.value = {} }
   finally { loading.value = false }
 })
+onUnmounted(() => { if (saveTimer !== null) window.clearTimeout(saveTimer) })
 </script>
 
 <template>
@@ -66,22 +83,24 @@ onMounted(async () => {
       <section class="cfg-card" :style="{ borderLeft: '4px solid #f59e0b' }">
         <div class="cfg-card-head">
           <span class="cfg-card-name">读写设置</span>
-          <button class="save-btn" :disabled="loading" @click="saveMain">保存</button>
+          <span class="live-tag">改动即生效</span>
         </div>
-        <p class="cfg-intro">影响应用打开速度、滑动加载速度; 保存后约 1 秒热生效。</p>
+        <p class="cfg-intro">影响应用打开速度、滑动加载速度; 修改自动保存, 约 1 秒热生效。</p>
 
         <div class="switch-row" style="margin-top: 4px;">
           <div><b>读写优化总开关</b><small>关闭后本页其余参数全部不生效</small></div>
           <van-switch size="22px" :model-value="!!getP('function.IOOptimization')"
-                      @update:model-value="(v: boolean) => setP('function.IOOptimization', v)" />
+                      @update:model-value="(v: boolean) => { setP('function.IOOptimization', v); persistMain() }" />
         </div>
         <DescLines :desc="IO_OPT_DESC" />
 
         <ParamRow
           v-for="p in IO_PARAMS" :key="p.path"
           :spec="p" :value="getP(p.path)"
-          @update="(v) => setP(p.path, v)"
+          @update="(v) => { setP(p.path, v); persistMain() }"
         />
+
+        <ResetDefaultsBtn @reset="resetModuleDefaults" />
       </section>
     </div>
   </div>

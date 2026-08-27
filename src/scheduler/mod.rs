@@ -345,7 +345,13 @@ pub fn start_scheduler_thread(rx: mpsc::Receiver<DaemonEvent>) -> Result<()> {
                             // Phase 2 / ticket-07: 若触发 ModeChange 的就是当前前台包,
                             // 叠加 App 规则偏置 (Restrict → 降低 target, Boost → 提高).
                             // ModeChange 事件的 package_name 就是触发源, 直接拿来匹配.
-                            let target = fas::controller::mode_target_pressure(&mode);
+                            //
+                            // 需求: 目标负载配置化 — config {mode}.target_load 优先,
+                            // 未配置回落 mode_target_pressure() 硬编码默认.
+                            let target = {
+                                let cfg_lock = config_clone.read().unwrap();
+                                cfg_lock.target_load_of(&mode)
+                            };
                             apply_app_rule_bias(
                                 &mut fas_controller,
                                 &config_clone,
@@ -421,7 +427,11 @@ pub fn start_scheduler_thread(rx: mpsc::Receiver<DaemonEvent>) -> Result<()> {
                         // 只对 FAS 模式应用 (非 FAS 模式靠 mode 自带的 target, App 规则
                         // 只在 FAS 调度下有意义; 非 FAS 用 CLG 完全不同的决策路径).
                         if current_mode == "fas" {
-                            let target = fas::controller::mode_target_pressure(&current_mode);
+                            // 需求: 目标负载配置化 (同 ModeChange 分支)
+                            let target = {
+                                let cfg_lock = config_clone.read().unwrap();
+                                cfg_lock.target_load_of(&current_mode)
+                            };
                             apply_app_rule_bias(
                                 &mut fas_controller,
                                 &config_clone,
@@ -449,6 +459,14 @@ pub fn start_scheduler_thread(rx: mpsc::Receiver<DaemonEvent>) -> Result<()> {
                         }
                         // 如果 CLG 处于活动状态（包含日常模式或息屏 Doze 模式），全权投喂
                         if cpu_governor.is_active() {
+                            // 需求: 频率护栏 — 每 tick 按当前屏幕状态从 config.freq_limits
+                            // 取值注入 (幂等). 放在这里而非 4 个激活点, config 热重载与
+                            // 屏幕切换都自动覆盖, 无需额外事件.
+                            let (fl_lo, fl_hi) = {
+                                let cfg_lock = config_clone.read().unwrap();
+                                cfg_lock.freq_limits.limits_for(is_screen_on)
+                            };
+                            cpu_governor.set_freq_limits(fl_lo, fl_hi);
                             cpu_governor.on_load_update(&core_utils);
                         }
                     },

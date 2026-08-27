@@ -3,13 +3,14 @@
   数据源: rules.yaml fas_rules (daemon inotify → 即时热重载)
 -->
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useSchedulerStore } from '@/stores/scheduler'
 import { Bridge } from '@/utils/bridge'
-import { FAS_PARAMS, FAS_GEARS_DESC, MODE_NAMES } from '@/config/moduleSpecs'
+import { FAS_PARAMS, FAS_GEARS_DESC, MODE_NAMES, FAS_DEFAULTS } from '@/config/moduleSpecs'
 import ParamRow from '@/components/ParamRow.vue'
 import DescLines from '@/components/DescLines.vue'
+import ResetDefaultsBtn from '@/components/ResetDefaultsBtn.vue'
 
 const router = useRouter()
 const store = useSchedulerStore()
@@ -19,6 +20,7 @@ const loading = ref(true)
 const errMsg = ref('')
 const okMsg = ref('')
 const fasGearsText = ref('30,60,90,120')
+let saveTimer: number | null = null
 
 function getFas(path: string): any {
   let cur = rulesCfg.value?.fas_rules
@@ -47,17 +49,38 @@ function applyFasGears() {
   setFas('fps_gears', arr)
 }
 
-async function saveFas() {
-  try {
-    applyFasGears() // 档位文本框一并落盘
-    await Bridge.saveRulesConfig(rulesCfg.value)
-    store.reportSave(true)
-    okMsg.value = '帧平滑参数已生效'
-    setTimeout(() => { okMsg.value = '' }, 2500)
-  } catch (e) {
-    store.reportSave(false)
-    errMsg.value = String(e)
+/** 防抖自动保存: 改完 600ms 自动写盘, daemon inotify 即时热重载 */
+function persistFas() {
+  if (saveTimer !== null) window.clearTimeout(saveTimer)
+  saveTimer = window.setTimeout(async () => {
+    try {
+      applyFasGears() // 档位文本框一并落盘
+      await Bridge.saveRulesConfig(rulesCfg.value)
+      store.reportSave(true)
+      okMsg.value = '帧平滑参数已生效'
+      setTimeout(() => { okMsg.value = '' }, 2000)
+    } catch (e) {
+      store.reportSave(false)
+      errMsg.value = String(e)
+    }
+  }, 600)
+}
+
+/** 恢复本模块默认: 帧率容差/PID 三系数/目标帧率档位 (应用专属规则保留) */
+function resetModuleDefaults() {
+  if (!rulesCfg.value) return
+  if (!rulesCfg.value.fas_rules) rulesCfg.value.fas_rules = {}
+  for (const [k, v] of Object.entries(FAS_DEFAULTS)) {
+    if (k.includes('.')) {
+      const [seg, leaf] = k.split('.')
+      setFas(k, v)
+      void seg; void leaf
+    } else {
+      setFas(k, v)
+    }
   }
+  syncGearsText()
+  persistFas()
 }
 
 onMounted(async () => {
@@ -70,6 +93,7 @@ onMounted(async () => {
     rulesCfg.value = {}
   } finally { loading.value = false }
 })
+onUnmounted(() => { if (saveTimer !== null) window.clearTimeout(saveTimer) })
 
 const fasOnlyHint = computed(() =>
   `仅对规则页中标记为"帧率自适应"的前台应用生效。当前调度档位:${MODE_NAMES[store.currentMode] ?? store.currentMode}`)
@@ -87,22 +111,24 @@ const fasOnlyHint = computed(() =>
       <section class="cfg-card" :style="{ borderLeft: '4px solid #ec4899' }">
         <div class="cfg-card-head">
           <span class="cfg-card-name">帧平滑</span>
-          <button class="save-btn" :disabled="loading" @click="saveFas">保存</button>
+          <span class="live-tag">改动即生效</span>
         </div>
         <p class="cfg-intro">{{ fasOnlyHint }}</p>
 
         <div class="param">
           <div class="param-head"><span class="p-label">目标帧率档位</span></div>
           <input type="text" class="gears-input" v-model="fasGearsText"
-                 placeholder="如 30,60,90,120" @change="applyFasGears" />
+                 placeholder="如 30,60,90,120" @change="persistFas" />
           <DescLines :desc="FAS_GEARS_DESC" />
         </div>
 
         <ParamRow
           v-for="p in FAS_PARAMS" :key="p.path"
           :spec="p" :value="getFas(p.path)"
-          @update="(v) => setFas(p.path, v)"
+          @update="(v) => { setFas(p.path, v); persistFas() }"
         />
+
+        <ResetDefaultsBtn @reset="resetModuleDefaults" />
       </section>
     </div>
   </div>

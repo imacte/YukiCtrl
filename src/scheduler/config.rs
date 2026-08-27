@@ -176,6 +176,56 @@ impl CpuLoadGovernorConfig {
 pub struct Mode {
     #[serde(default, alias = "CpuLoadGovernor")]
     pub cpu_load_governor: CpuLoadGovernorConfig,
+
+    /// 需求: 目标负载 (WebUI 暴露, 按模式独立记忆).
+    /// None = 未配置 → 回落 `fas::controller::mode_target_pressure()` 硬编码默认
+    /// (powersave=40 / balance=60 / performance=75 / fast=85).
+    #[serde(default)]
+    pub target_load: Option<f32>,
+}
+
+/// 需求: CPU 频率护栏 (亮屏/息屏两套, 相对 policy 最高频的百分比).
+///
+/// CLG 决策出的 perf 会被 clamp 到 [min_pct, max_pct]/100 后再选频:
+/// - 最低频率: 防止低负载时掉到极低频导致卡顿 (下限托底)
+/// - 最高频率: 省电限频 (上限封顶, 如息屏 60% = 大核最高只到 60% 档位)
+///
+/// 默认 0/100 = 不限制, 与历史行为完全一致.
+#[derive(Debug, Deserialize, Clone, Copy)]
+pub struct FreqLimits {
+    #[serde(default = "d_fl_off")] pub screen_on_min_pct: f32,
+    #[serde(default = "d_fl_on")]  pub screen_on_max_pct: f32,
+    #[serde(default = "d_fl_off")] pub screen_off_min_pct: f32,
+    #[serde(default = "d_fl_on")]  pub screen_off_max_pct: f32,
+}
+
+fn d_fl_off() -> f32 { 0.0 }
+fn d_fl_on() -> f32 { 100.0 }
+
+impl Default for FreqLimits {
+    fn default() -> Self {
+        Self {
+            screen_on_min_pct: d_fl_off(),
+            screen_on_max_pct: d_fl_on(),
+            screen_off_min_pct: d_fl_off(),
+            screen_off_max_pct: d_fl_on(),
+        }
+    }
+}
+
+impl FreqLimits {
+    /// 取当前屏幕状态生效的 (floor, ceil) 百分比 (已 clamp 且 floor<=ceil)
+    pub fn limits_for(&self, screen_on: bool) -> (f32, f32) {
+        let (mut lo, mut hi) = if screen_on {
+            (self.screen_on_min_pct, self.screen_on_max_pct)
+        } else {
+            (self.screen_off_min_pct, self.screen_off_max_pct)
+        };
+        lo = lo.clamp(0.0, 100.0);
+        hi = hi.clamp(0.0, 100.0);
+        if lo > hi { lo = hi; }
+        (lo / 100.0, hi / 100.0)
+    }
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -223,6 +273,9 @@ pub struct Config {
     pub io_settings: IOSettings,
     #[serde(default, rename = "CpuIdle")]
     pub cpu_idle: CpuIdle,
+    /// 需求: CPU 频率护栏 (亮屏/息屏两套); 缺失 = 全开不限制
+    #[serde(default)]
+    pub freq_limits: FreqLimits,
 
     // 按场景划分的性能模式
     #[serde(default)] pub powersave: Mode,
@@ -262,5 +315,14 @@ impl Config {
             "fast" => Some(&self.fast),
             _ => None,
         }
+    }
+
+    /// 需求: 当前模式的目标负载 — 配置值优先, 未配置回落硬编码默认
+    /// (powersave=40 / balance=60 / performance=75 / fast=85).
+    pub fn target_load_of(&self, mode_name: &str) -> f32 {
+        self.get_mode(mode_name)
+            .and_then(|m| m.target_load)
+            .map(|v| v.clamp(5.0, 95.0))
+            .unwrap_or_else(|| crate::scheduler::fas::controller::mode_target_pressure(mode_name))
     }
 }

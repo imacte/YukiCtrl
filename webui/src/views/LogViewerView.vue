@@ -1,12 +1,17 @@
 <script setup lang="ts">
 import { ref, onMounted, nextTick, computed } from 'vue'
+import yaml from 'js-yaml'
 import { Bridge } from '@/utils/bridge'
 import { useI18n } from 'vue-i18n'
+import { saveHotplugConfig } from '@/api/hotplug'
+import { CLG_MODE_DEFAULTS, FREQ_LIMIT_DEFAULTS, HOTPLUG_DEFAULTS, IO_DEFAULTS, FAS_DEFAULTS } from '@/config/moduleSpecs'
+import ResetDefaultsBtn from '@/components/ResetDefaultsBtn.vue'
 
 const { t } = useI18n()
 const logContent = ref('')
 const loading = ref(false)
 const terminalBody = ref<HTMLElement | null>(null)
+const resetMsg = ref('')
 
 const fetchLog = async () => {
   loading.value = true
@@ -20,6 +25,55 @@ const fetchLog = async () => {
   } finally {
     loading.value = false
   }
+}
+
+/**
+ * 需求: 恢复全部默认值 — 所有模块、所有档位、亮屏/息屏的全部参数。
+ * 覆盖范围:
+ *   - config.yaml: 四档位五参数 + 频率护栏 + 读写三参数 + 读写总开关
+ *   - hotplug/config.yaml: 核心开关全量默认
+ *   - rules.yaml fas_rules: 帧率容差/PID 三系数/目标帧率档位
+ * 保留: 应用专属规则 (app_modes/per_app_profiles), 当前全局档位, meta, 日志级别。
+ * 写盘即热生效 (daemon inotify / 200ms tick)。
+ */
+const resetAllDefaults = async () => {
+  try {
+    // 1. config.yaml — 四档位 + 频率护栏 + 读写
+    const mainCfg: any = await Bridge.getMainConfig()
+    for (const [mode, defs] of Object.entries(CLG_MODE_DEFAULTS)) {
+      if (!mainCfg[mode]) mainCfg[mode] = {}
+      if (!mainCfg[mode].cpu_load_governor) mainCfg[mode].cpu_load_governor = {}
+      for (const [k, v] of Object.entries(defs)) mainCfg[mode].cpu_load_governor[k] = v
+    }
+    mainCfg.freq_limits = { ...FREQ_LIMIT_DEFAULTS }
+    if (!mainCfg.IO_Settings) mainCfg.IO_Settings = {}
+    for (const [k, v] of Object.entries(IO_DEFAULTS)) mainCfg.IO_Settings[k] = v
+    if (!mainCfg.function) mainCfg.function = {}
+    mainCfg.function.IOOptimization = true
+    await Bridge.saveMainConfig(yaml.load(yaml.dump(mainCfg)))
+
+    // 2. hotplug/config.yaml — 核心开关全量默认
+    await saveHotplugConfig(JSON.parse(JSON.stringify(HOTPLUG_DEFAULTS)))
+
+    // 3. rules.yaml fas_rules — 帧平滑参数 (保留 per_app_profiles 与 app_modes)
+    const rulesCfg: any = await Bridge.getRulesConfig()
+    if (!rulesCfg.fas_rules) rulesCfg.fas_rules = {}
+    for (const [k, v] of Object.entries(FAS_DEFAULTS)) {
+      const segs = k.split('.')
+      let cur = rulesCfg.fas_rules
+      for (let i = 0; i < segs.length - 1; i++) {
+        if (!cur[segs[i]]) cur[segs[i]] = {}
+        cur = cur[segs[i]]
+      }
+      cur[segs[segs.length - 1]] = v
+    }
+    await Bridge.saveRulesConfig(rulesCfg)
+
+    resetMsg.value = '已恢复全部默认值, 各模块立即生效 (当前档位与应用专属规则保留)'
+  } catch (e) {
+    resetMsg.value = `恢复失败: ${String(e)}`
+  }
+  setTimeout(() => { resetMsg.value = '' }, 4000)
 }
 
 const formattedLog = computed(() => {
@@ -45,6 +99,13 @@ onMounted(() => fetchLog())
       <van-icon name="replay" size="20" color="var(--accent)" @click="fetchLog" />
     </div>
 
+    <div class="global-reset-card">
+      <div class="gr-title">危险操作</div>
+      <div class="gr-desc">把所有模块、所有档位、亮屏/息屏的全部参数恢复为出厂默认值, 立即生效并保存。应用专属规则与当前档位保留。</div>
+      <div v-if="resetMsg" class="gr-msg" :class="{ err: resetMsg.startsWith('恢复失败') }">{{ resetMsg }}</div>
+      <ResetDefaultsBtn label="恢复全部默认值" danger @reset="resetAllDefaults" />
+    </div>
+
     <van-loading v-if="loading && !logContent" class="loading-center" vertical>{{ t('loading') }}</van-loading>
 
     <div v-else class="terminal-card">
@@ -62,6 +123,18 @@ onMounted(() => fetchLog())
     </div>
   </div>
 </template>
+
+<style scoped>
+.global-reset-card {
+  margin: 0 16px 16px; padding: 14px 16px;
+  border: 1px solid #b91c1c; border-radius: 12px;
+  background: var(--bg-card);
+}
+.gr-title { font-size: 15px; font-weight: 700; color: #b91c1c; }
+.gr-desc { margin: 6px 0 12px; font-size: 13px; line-height: 1.6; color: var(--text-secondary); }
+.gr-msg { margin-bottom: 10px; font-size: 13px; color: #15803d; }
+.gr-msg.err { color: #b91c1c; }
+</style>
 
 <style scoped>
 .log-viewer { min-height: 100vh; background: var(--bg-base); }
