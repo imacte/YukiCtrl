@@ -136,11 +136,10 @@ pub async fn start_cpu_loop(tx: Sender<DaemonEvent>) -> Result<(), anyhow::Error
     program.attach("sched", "sched_switch")?;
     info!("{}", t("cpu-monitor-started"));
 
-    // 获取准确的物理在线核心列表
+    // 获取准确的物理在线核心列表 (仅启动日志用; 采样 loop 内每 tick 重读)
     let online_cpus_list = online_cpus().map_err(|e| {
         anyhow::anyhow!("{}", t_with_args("cpu-monitor-online-cpus-failed", &fluent_args!("error" => format!("{:?}", e))))
     })?;
-    let max_cpu_id = online_cpus_list.iter().copied().max().unwrap_or(0) as usize;
     info!("{}", t_with_args("cpu-monitor-online-cpus", &fluent_args!("cpus" => format!("{:?}", online_cpus_list))));
 
     let bpf_ptr = bpf as *mut Ebpf;
@@ -191,9 +190,13 @@ pub async fn start_cpu_loop(tx: Sender<DaemonEvent>) -> Result<(), anyhow::Error
     });
 
     tokio::spawn(async move {
-        // 根据最大 CPU ID 初始化历史记录向量，避免越界
-        let mut last_idle_times = vec![0u64; max_cpu_id + 1];
-        let mut last_busy_times = vec![0u64; max_cpu_id + 1];
+        // 历史向量按 SoC 全核槽位定长 (8 核), 与运行期在线集合变化解耦 —
+        // 若按启动快照长度分配, 后续上线的核 (如 cpu5/6/7) 会索引越界.
+        /// SoC 核数上限 (与 scheduler::hotplug::threshold::MAX_CPU_ID+1 一致,
+        /// 本地声明避免 monitor → scheduler 反向耦合)
+        const MAX_CPU_SLOTS: usize = 8;
+        let mut last_idle_times = vec![0u64; MAX_CPU_SLOTS];
+        let mut last_busy_times = vec![0u64; MAX_CPU_SLOTS];
         let mut last_check_time = get_ktime_ns();
 
         // TGID 级聚合数据：per-PID 的历史值
@@ -213,6 +216,13 @@ pub async fn start_cpu_loop(tx: Sender<DaemonEvent>) -> Result<(), anyhow::Error
             last_check_time = now_ktime;
 
             if real_delta_ns == 0 { continue; }
+
+            // 热插拔联动 (失明修复): 每 tick 重读在线核集合.
+            // 旧实现用启动快照 — 核被 hotplug/触摸/外部模块拉起后, loads 对
+            // 新在线核永久失明: 负载关核决策看不到它们 → 滞留在线永不回落
+            // (真机观测: 触摸旁路拉起 cpu5/6/7 后 20s 空闲仍全开).
+            let online_cpus_list: Vec<u32> = online_cpus().unwrap_or_default();
+            if online_cpus_list.is_empty() { continue; }
 
             let zero_key: u32 = 0;
             let per_cpu_idle_values = core_idle_map.get(&zero_key, 0);

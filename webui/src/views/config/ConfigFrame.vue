@@ -57,7 +57,7 @@ function persistFas() {
       applyFasGears() // 档位文本框一并落盘
       await Bridge.saveRulesConfig(rulesCfg.value)
       store.reportSave(true)
-      okMsg.value = '帧平滑参数已生效'
+      okMsg.value = '帧平滑参数已自动保存并生效'
       setTimeout(() => { okMsg.value = '' }, 2000)
     } catch (e) {
       store.reportSave(false)
@@ -111,7 +111,7 @@ const fasOnlyHint = computed(() =>
       <section class="cfg-card" :style="{ borderLeft: '4px solid #ec4899' }">
         <div class="cfg-card-head">
           <span class="cfg-card-name">帧平滑</span>
-          <span class="live-tag">改动即生效</span>
+          <span class="live-tag">改动自动生效</span>
         </div>
         <p class="cfg-intro">{{ fasOnlyHint }}</p>
 

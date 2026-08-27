@@ -44,7 +44,7 @@ function persistHp() {
     try {
       await saveHotplugConfig(hpCfg.value)
       store.reportSave(true)
-      flashOk('核心开关已生效')
+      flashOk('核心开关已自动保存并生效')
     } catch (e) {
       store.reportSave(false)
       errMsg.value = String(e)
@@ -119,7 +119,7 @@ function resetModuleDefaults() {
       <section class="cfg-card" :style="{ borderLeft: '4px solid #ef4444' }">
         <div class="cfg-card-head">
           <span class="cfg-card-name">核心开关</span>
-          <span class="live-tag">改动即生效</span>
+          <span class="live-tag">改动自动生效</span>
         </div>
 
         <div v-for="g in keepGroups" :key="g.key" class="keep-block">

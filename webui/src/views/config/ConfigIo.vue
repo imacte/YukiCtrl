@@ -45,7 +45,7 @@ function persistMain() {
     try {
       await Bridge.saveMainConfig(yaml.load(yaml.dump(mainCfg.value)))
       store.reportSave(true)
-      okMsg.value = '已生效'
+      okMsg.value = '已自动保存并生效'
       setTimeout(() => { okMsg.value = '' }, 2000)
     } catch (e) {
       store.reportSave(false)
@@ -83,7 +83,7 @@ onUnmounted(() => { if (saveTimer !== null) window.clearTimeout(saveTimer) })
       <section class="cfg-card" :style="{ borderLeft: '4px solid #f59e0b' }">
         <div class="cfg-card-head">
           <span class="cfg-card-name">读写设置</span>
-          <span class="live-tag">改动即生效</span>
+          <span class="live-tag">改动自动生效</span>
         </div>
         <p class="cfg-intro">影响应用打开速度、滑动加载速度; 修改自动保存, 约 1 秒热生效。</p>
 

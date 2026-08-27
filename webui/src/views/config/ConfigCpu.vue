@@ -63,7 +63,7 @@ function persistMain() {
     try {
       await Bridge.saveMainConfig(yaml.load(yaml.dump(mainCfg.value)))
       store.reportSave(true)
-      okMsg.value = `已生效 (${MODE_NAMES[store.currentMode] ?? ''}档)`
+      okMsg.value = `已自动保存并生效 (${MODE_NAMES[store.currentMode] ?? ''}档)`
       setTimeout(() => { okMsg.value = '' }, 2000)
     } catch (e) {
       store.reportSave(false)
@@ -138,7 +138,7 @@ function flUpd(p: ParamSpec, v: unknown) { setP('freq_limits.' + p.path, v); per
       <section class="cfg-card" :style="{ borderLeft: '4px solid #3b82f6' }">
         <div class="cfg-card-head">
           <span class="cfg-card-name">处理器设置</span>
-          <span class="live-tag">改动即生效</span>
+          <span class="live-tag">改动自动生效</span>
         </div>
         <p class="cfg-intro">五参数按档位独立记忆, 切档自动加载对应值; 修改后自动保存, 约 1 秒生效。</p>
 
@@ -159,7 +159,7 @@ function flUpd(p: ParamSpec, v: unknown) { setP('freq_limits.' + p.path, v); per
       <section class="cfg-card" :style="{ borderLeft: '4px solid #1d4ed8' }">
         <div class="cfg-card-head">
           <span class="cfg-card-name">频率护栏</span>
-          <span class="live-tag">改动即生效</span>
+          <span class="live-tag">改动自动生效</span>
         </div>
         <p class="cfg-intro">处理器频率的硬性上下限 (相对最高频的百分比), 亮屏/息屏独立两套; 与上面档位参数叠加生效。</p>
 

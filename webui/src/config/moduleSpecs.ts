@@ -37,7 +37,11 @@ export function fmtVal(p: ParamSpec, v: unknown): string {
   const s = p.scale ?? 1
   const n = Number(v)
   if (!Number.isFinite(n)) return '--'
-  const decimals = s !== 1 && p.step && p.step < 1 ? 2 : 0
+  // 小数位由"显示粒度"决定: step 换算到显示坐标系 (step * scale).
+  // 修复 bug: 旧逻辑 (s !== 1 && step < 1) 对无 scale 的参数 (如平滑系数
+  // 0.05~1) 取 0 位小数 → 0.05..0.49 全显示 "0", 滑块拖动数值看似不动.
+  const dispStep = (p.step ?? 1) * s
+  const decimals = dispStep >= 1 ? 0 : (dispStep >= 0.1 ? 1 : 2)
   return `${(n * s).toFixed(decimals)}${p.unit ?? ''}`
 }
 
@@ -57,19 +61,19 @@ export interface ModuleMeta {
   route: string
   /** 一句话介绍 (入口卡副标题) */
   brief: string
-  /** 入口卡右侧标签 */
-  tag: '改动即生效' | '自动管理' | '保存后生效'
+  /** 入口卡右侧标签 (文案统一: 可配置模块=改动自动生效; 纯自动模块=自动管理) */
+  tag: '改动自动生效' | '自动管理'
 }
 
 export const MODULES: ModuleMeta[] = [
-  { key: 'hotplug', name: '核心开关', color: '#ef4444', icon: 'cluster-o',          route: '/config/hotplug', brief: '8 个处理器核心的在线休眠与保留策略', tag: '改动即生效' },
-  { key: 'cpu',     name: '处理器',   color: '#3b82f6', icon: 'setting-o',          route: '/config/cpu',     brief: '升降频灵敏度, 按省电/均衡/性能/极速分别记忆', tag: '保存后生效' },
+  { key: 'hotplug', name: '核心开关', color: '#ef4444', icon: 'cluster-o',          route: '/config/hotplug', brief: '8 个处理器核心的在线休眠与保留策略', tag: '改动自动生效' },
+  { key: 'cpu',     name: '处理器',   color: '#3b82f6', icon: 'setting-o',          route: '/config/cpu',     brief: '升降频灵敏度, 按省电/均衡/性能/极速分别记忆', tag: '改动自动生效' },
   { key: 'gpu',     name: '显卡',     color: '#8b5cf6', icon: 'chart-trending-o',   route: '/config/gpu',     brief: '显卡频率由帧平滑引擎自动调节, 此处看实时负载', tag: '自动管理' },
   { key: 'touch',   name: '触摸加速', color: '#06b6d4', icon: 'hot-o',              route: '/config/touch',   brief: '手指触屏瞬间唤醒核心, 滑动更跟手', tag: '自动管理' },
-  { key: 'frame',   name: '帧平滑',   color: '#ec4899', icon: 'play-circle-o',      route: '/config/frame',   brief: '游戏帧率自动稳帧, 目标档位与灵敏度', tag: '保存后生效' },
-  { key: 'io',      name: '读写',     color: '#f59e0b', icon: 'records',            route: '/config/io',      brief: '存储调度算法与预读缓存, 影响打开应用速度', tag: '保存后生效' },
+  { key: 'frame',   name: '帧平滑',   color: '#ec4899', icon: 'play-circle-o',      route: '/config/frame',   brief: '游戏帧率自动稳帧, 目标档位与灵敏度', tag: '改动自动生效' },
+  { key: 'io',      name: '读写',     color: '#f59e0b', icon: 'records',            route: '/config/io',      brief: '存储调度算法与预读缓存, 影响打开应用速度', tag: '改动自动生效' },
   { key: 'swap',    name: '内存',     color: '#10b981', icon: 'diamond-o',          route: '/config/swap',    brief: '内存压力与压缩交换监控, 交由系统自动调节', tag: '自动管理' },
-  { key: 'temp',    name: '温度保护', color: '#991b1b', icon: 'warning-o',          route: '/config/temp',    brief: '过热强制全核在线的保护温度线', tag: '改动即生效' },
+  { key: 'temp',    name: '温度保护', color: '#991b1b', icon: 'warning-o',          route: '/config/temp',    brief: '过热强制全核在线的保护温度线', tag: '改动自动生效' },
 ]
 
 /* ==================== 调度模式 (全局唯一真源: stores/scheduler) ==================== */
@@ -316,7 +320,7 @@ export const FAS_GEARS_DESC: [string, string, string, string, string] = [
   '玩 120 赫兹游戏 → 加入 120; 只玩 60 帧网游 → 45,60 即可。',
   '30,60,90,120 全档覆盖。']
 
-/* ==================== 核心开关 (红色) — hotplug/config.yaml, 改动即生效 ==================== */
+/* ==================== 核心开关 (红色) — hotplug/config.yaml, 改动自动生效 ==================== */
 
 /** 保留核心勾选组 (亮屏组 + 息屏组共用一条五维) */
 export const KEEP_DESC: [string, string, string, string, string] = [

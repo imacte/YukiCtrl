@@ -36,7 +36,7 @@ function persist() {
     try {
       await saveHotplugConfig(hpCfg.value)
       store.reportSave(true)
-      okMsg.value = '温度保护线已生效'
+      okMsg.value = '温度保护线已自动保存并生效'
       setTimeout(() => { okMsg.value = '' }, 2000)
     } catch (e) {
       store.reportSave(false)
@@ -81,7 +81,7 @@ onUnmounted(() => {
       <section class="cfg-card" :style="{ borderLeft: '4px solid #991b1b' }">
         <div class="cfg-card-head">
           <span class="cfg-card-name">温度保护</span>
-          <span class="live-tag">改动即生效</span>
+          <span class="live-tag">改动自动生效</span>
         </div>
 
         <div class="readout">
