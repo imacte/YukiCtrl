@@ -2,7 +2,7 @@
 #
 # restore_defaults.sh — 任务 #6 reliability
 #
-# 把 yumi 涉及的所有可调参数重置为内核/厂商默认值, 作为 watchdog
+# 把 core-pilot 涉及的所有可调参数重置为内核/厂商默认值, 作为 watchdog
 # 在 "心跳失联 / 核心数掉到 1 / 温度临界" 时的一键自愈脚本.
 #
 # 调用方: Rust watchdog 线程 → `/system/bin/sh restore_defaults.sh <reason>`
@@ -12,10 +12,12 @@
 # 设计原则:
 #   1. 不修改已有 disable_boost.sh 的逻辑, 仅在其之外补齐 "默认值恢复" 路径.
 #   2. 所有写操作都包在 [ -e path ] 检查里, 缺啥跳啥 (不同厂商/机型差异极大).
-#   3. 不删除任何东西, 只把值写回公认 default, 让 yumi 重新接管.
+#   3. 不删除任何东西, 只把值写回公认 default, 让 core-pilot 重新接管.
 
 set -u  # 未定义变量即报错 (防止 typo 静默)
 
+# MODDIR 由 watchdog 在 spawn 时显式传入; 缺省回退到生产路径 (单跑调试场景)
+: "${MODDIR:=/data/adb/modules/core-pilot}"
 REASON="${1:-unspecified}"
 LOG_FILE="$MODDIR/logs/restore_defaults.log"
 mkdir -p "$(dirname "$LOG_FILE")"
@@ -39,7 +41,7 @@ write_value() {
     done
 }
 
-# ─── 1. CPU 频率 / governor: 取消 yumi 设置, 让 schedutil/ondemand 接管 ──
+# ─── 1. CPU 频率 / governor: 取消 core-pilot 设置, 让 schedutil/ondemand 接管 ──
 restore_cpu_defaults() {
     log_line "=== restore_cpu_defaults ==="
 
@@ -74,7 +76,7 @@ restore_cores_online() {
         fi
     done
 
-    # 关闭 yumi 之外的 hotplug 守护 (MTK sched, HMP boost 等)
+    # 关闭 core-pilot 之外的 hotplug 守护 (MTK sched, HMP boost 等)
     write_value "/sys/devices/system/cpu/cpuhotplug/enabled" "0"
     write_value "/sys/devices/system/cpu/hyp_core_ctl/enable" "0"
     write_value "/sys/kernel/intelli_plug/intelli_plug_active" "0"
@@ -136,7 +138,7 @@ restore_swap_defaults() {
     write_value "/proc/sys/vm/dirty_ratio" "20"
     write_value "/proc/sys/vm/dirty_background_ratio" "10"
 
-    # zram: 不强制 reset disksize (会丢失数据), 只关掉 yumi 临时设的限制
+    # zram: 不强制 reset disksize (会丢失数据), 只关掉 core-pilot 临时设的限制
     for zram in /sys/block/zram*; do
         [ -d "$zram" ] || continue
         write_value "$zram/reset" "1"

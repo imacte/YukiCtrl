@@ -1,7 +1,7 @@
 // src/sensor/mod.rs
 //
 // 任务 #5 (WebUI 扩展): 把全局 SenseSnapshot 200ms 序列化到
-// /data/adb/modules/yumi/sense/snapshot.yaml, 让 WebUI 通过
+// /data/adb/modules/core-pilot/sense/snapshot.yaml, 让 WebUI 通过
 // KSU exec cat 读出来刷新 SensePanel.
 //
 // 设计动机:

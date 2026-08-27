@@ -24,3 +24,13 @@ yumi-*.zip
 *.bak
 output/
 *.log
+
+# SSH / secrets
+/.ssh/
+
+# npm build output
+scripts/npm-*.err
+scripts/npm-*.out
+
+# ad-hoc diagnostic binaries
+/src/bin/

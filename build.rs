@@ -48,6 +48,33 @@ fn build_ebpf() -> Result<PathBuf, Box<dyn std::error::Error>> {
     }
 
     // 2. 编译 BPF 程序（在 yumi-ebpf 目录中，避免 workspace 干扰）
+    // 快速通道: 若 manifest_dir/target/bpfel-unknown-none/release/yumi-ebpf 已存在且更新于 yumi-ebpf/src/*,
+    // 复制到 OUT_DIR (绕过 bpf-linker 0.0.0 的 --sysroot 兼容问题, ticket-06).
+    // 注意: include_bytes! 路径是 OUT_DIR 相对路径, 不能直接返回 manifest_dir 路径.
+    let prebuilt_src = manifest_dir
+        .join("target")
+        .join("bpfel-unknown-none")
+        .join("release")
+        .join("yumi-ebpf");
+    let ebpf_src_meta = std::fs::metadata(ebpf_dir.join("src").join("main.rs"))
+        .and_then(|m| m.modified())
+        .ok();
+    let prebuilt_meta = std::fs::metadata(&prebuilt_src).and_then(|m| m.modified()).ok();
+    let use_prebuilt = prebuilt_meta.is_some()
+        && (ebpf_src_meta.is_none() || ebpf_src_meta.unwrap() <= prebuilt_meta.unwrap());
+    if use_prebuilt {
+        // include_bytes! 路径是 OUT_DIR/ebpf_target/bpfel-unknown-none/release/yumi-ebpf
+        let target_obj = target_dir
+            .join("bpfel-unknown-none")
+            .join("release")
+            .join("yumi-ebpf");
+        fs::create_dir_all(target_obj.parent().ok_or("no parent dir")?)?;
+        fs::copy(&prebuilt_src, &target_obj)
+            .map_err(|e| format!("fast-path copy failed: {} -> {}: {}", prebuilt_src.display(), target_obj.display(), e))?;
+        println!("cargo:warning=⚡ 复用预编译 BPF ELF (fast-path copy): {} -> {}", prebuilt_src.display(), target_obj.display());
+        return Ok(target_obj);
+    }
+
     let mut ebpf_args = vec![
         "--target", "bpfel-unknown-none",
         "-Z", "build-std=core",

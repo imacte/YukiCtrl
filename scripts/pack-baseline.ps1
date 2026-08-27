@@ -62,7 +62,40 @@ $zipPath = Join-Path $outputDir $zipName
 
 Write-Host "Packaging $zipPath ..."
 Add-Type -AssemblyName System.IO.Compression.FileSystem
-[System.IO.Compression.ZipFile]::CreateFromDirectory($temp, $zipPath, [System.IO.Compression.CompressionLevel]::Optimal, $false)
+
+# CreateFromDirectory emits entries with platform-native separators.
+# On Windows that means '\\' which Android's zip tools do not rewrite to '/',
+# causing /data/adb/modules_update/yumi/config\config.yaml style paths and
+# 'No such file or directory' on chown/install. Post-process every entry name
+# to use forward slashes; this is the same convention Magisk/KSU modules use.
+$tmpZip = $zipPath + '.tmp'
+[System.IO.Compression.ZipFile]::CreateFromDirectory($temp, $tmpZip, [System.IO.Compression.CompressionLevel]::Optimal, $false)
+
+$rewrite = $true
+if ($PSVersionTable.PSVersion.Major -ge 6) { $rewrite = $true }
+$src = [System.IO.Compression.ZipFile]::OpenRead($tmpZip)
+$dst = [System.IO.Compression.ZipFile]::Open($zipPath, [System.IO.Compression.ZipArchiveMode]::Create)
+foreach ($e in $src.Entries) {
+    $newName = $e.FullName -replace '\\', '/'
+    # Detect shell scripts whose source ended up with CRLF on disk and
+    # normalize to LF so Android /system/bin/sh does not choke on '\r'.
+    $isShell = $newName -match '\.(sh|prop|yaml|ftl)$' -and $e.Length -gt 0
+    $buf = New-Object byte[] $e.Length
+    if ($isShell) {
+        $s = $e.Open(); $s.Read($buf, 0, $buf.Length) | Out-Null; $s.Close()
+        $text = [System.Text.Encoding]::UTF8.GetString($buf)
+        if ($text.Contains("`r`n")) {
+            $text = $text -replace "`r`n", "`n"
+            $buf = [System.Text.Encoding]::UTF8.GetBytes($text)
+        }
+    } else {
+        $s = $e.Open(); $s.Read($buf, 0, $buf.Length) | Out-Null; $s.Close()
+    }
+    $ne = $dst.CreateEntry($newName, [System.IO.Compression.CompressionLevel]::Optimal)
+    $ns = $ne.Open(); $ns.Write($buf, 0, $buf.Length); $ns.Close()
+}
+$src.Dispose(); $dst.Dispose()
+Remove-Item $tmpZip -Force
 
 Write-Host ("Done: " + (Resolve-Path $zipPath).Path) -ForegroundColor Green
 Write-Host ("Size: " + (Get-Item $zipPath).Length + " bytes")

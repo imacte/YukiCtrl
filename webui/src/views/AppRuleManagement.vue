@@ -1,14 +1,7 @@
 <!--
   src/views/AppRuleManagement.vue
 
-  任务 #5: App 规则管理页面 (替换旧的 AppRulesView).
-
-  功能:
-    - 顶部: FAS-only 提示横幅 (粘性, 不可关闭)
-    - 列表: 已配置的 AppRule (包名 / 类型 / 强度 / 禁 burst 标识)
-    - 顶部 "添加规则" 按钮: 弹出编辑表单 (van-popup + van-form)
-    - 列表项点击: 编辑 / 删除
-    - 所有配置项旁加 HelpTooltip
+  App \u89c4\u5219\u7ba1\u7406 (\u6697\u8272)
 -->
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
@@ -50,32 +43,20 @@ onMounted(async () => {
   allApps.value = pkgs
   try {
     const infos = getPackagesInfo(pkgs)
-    infos.forEach(info => {
-      appLabelMap.value[info.packageName] = info.appLabel
-    })
-  } catch { /* 忽略 */ }
-
+    infos.forEach(info => { appLabelMap.value[info.packageName] = info.appLabel })
+  } catch { /* ignore */ }
   rules.value = await fetchAppRules()
   await store.initData()
 })
 
-const openAdd = () => {
-  editingRule.value = blankRule()
-  editing.value = true
-}
-
-const openEdit = (r: AppRule) => {
-  editingRule.value = JSON.parse(JSON.stringify(r))
-  editing.value = true
-}
-
+const openAdd = () => { editingRule.value = blankRule(); editing.value = true }
+const openEdit = (r: AppRule) => { editingRule.value = JSON.parse(JSON.stringify(r)); editing.value = true }
 const onSave = async () => {
   if (!editingRule.value.package) return
   await saveAppRule(editingRule.value)
   rules.value = await fetchAppRules()
   editing.value = false
 }
-
 const onDelete = async (pkg: string) => {
   await deleteAppRule(pkg)
   rules.value = await fetchAppRules()
@@ -88,7 +69,6 @@ const strengthLabel = (s?: RuleStrength) => {
     default: return t('rule_strength_medium')
   }
 }
-
 const typeLabel = (t: RuleType) => t === 'restrict' ? t('rule_type_restrict') : t('rule_type_boost')
 
 const previewValues = computed(() => {
@@ -110,163 +90,116 @@ const pickApp = (pkg: string) => {
 }
 </script>
 <template>
-  <div class="app-rule-mgmt">
-    <van-nav-bar :title="t('app_rule_management')" left-arrow @click-left="$router.back()" fixed placeholder />
-
-    <van-sticky>
-      <div class="fas-only-banner">
-        <van-icon name="warning-o" size="20" color="#ff976a" />
-        <span class="banner-text">{{ t('app_rule_fas_only_notice') }}</span>
-        <HelpTooltip
-          :title="t('app_rule_fas_only_title')"
-          :text="t('app_rule_fas_only_desc')"
-        />
-      </div>
-    </van-sticky>
-
-    <van-search v-model="searchText" :placeholder="t('search_app_or_pkg')" />
-
-    <div class="add-bar">
-      <van-button type="primary" block icon="plus" @click="openAdd">{{ t('add_app_rule') }}</van-button>
+  <div class="rule-page">
+    <div class="page-header">
+      <span class="page-title">{{ t('app_rule_management') }}</span>
+      <van-button type="primary" size="small" @click="openAdd">{{ t('add_app_rule') }}</van-button>
     </div>
 
-    <van-cell-group v-if="rules.length === 0" inset>
-      <div class="empty">
-        <van-icon name="apps-o" size="48" color="#ccc" />
-        <p>{{ t('no_app_rules_yet') }}</p>
+    <div class="fas-only-banner">
+      <van-icon name="info-o" />
+      <span class="banner-text">{{ t('app_rule_fas_only_notice') }}</span>
+    </div>
+
+    <van-search v-model="searchText" :placeholder="t('search_apps')" />
+
+    <div class="rule-list" v-if="filteredRules.length">
+      <div v-for="r in filteredRules" :key="r.package" class="rule-card" @click="openEdit(r)">
+        <div class="rule-row">
+          <div>
+            <div class="rule-name">{{ getLabel(r.package) }}</div>
+            <div class="rule-pkg">{{ r.package }}</div>
+          </div>
+          <van-icon name="delete-o" @click.stop="onDelete(r.package)" color="var(--danger)" />
+        </div>
+        <div class="rule-meta">
+          <span class="rule-tag" :class="r.rule_type">{{ typeLabel(r.rule_type) }}</span>
+          <span class="rule-tag">{{ strengthLabel(r.strength) }}</span>
+          <span v-if="r.disable_burst" class="rule-tag">burst off</span>
+        </div>
       </div>
-    </van-cell-group>
+    </div>
 
-    <van-list v-else>
-      <van-cell
-        v-for="r in filteredRules"
-        :key="r.package"
-        :title="getLabel(r.package)"
-        :label="r.package"
-        clickable
-        @click="openEdit(r)"
-      >
-        <template #value>
-          <van-tag :type="r.rule_type === 'restrict' ? 'warning' : 'success'" size="medium">
-            {{ typeLabel(r.rule_type) }} · {{ strengthLabel(r.strength) }}
-          </van-tag>
-          <van-tag v-if="r.disable_burst" type="danger" size="mini" style="margin-left: 4px;">no-burst</van-tag>
-        </template>
-        <template #right-icon>
-          <van-icon name="cross" color="#dc3545" @click.stop="onDelete(r.package)" />
-        </template>
-      </van-cell>
-    </van-list>
+    <div class="empty" v-else>
+      <van-icon name="apps-o" size="48" color="var(--text-muted)" />
+      <p>{{ t('no_app_rules_yet') }}</p>
+    </div>
 
-    <van-popup v-model:show="editing" position="bottom" round :style="{ height: '78%' }">
+    <van-popup v-model:show="editing" position="bottom" round :style="{ height: '85%' }">
       <div class="edit-popup">
-        <van-nav-bar :title="editingRule.package ? t('edit_app_rule') : t('add_app_rule')" left-text="取消" @click-left="editing = false" />
+        <div class="page-header">
+          <span class="page-title">{{ editingRule.package ? t('edit_app_rule') : t('add_app_rule') }}</span>
+          <van-button type="primary" size="small" @click="onSave">{{ t('save') }}</van-button>
+        </div>
 
-        <van-cell-group inset :title="t('choose_package')">
-          <van-cell
-            :title="editingRule.package ? getLabel(editingRule.package) : t('tap_to_choose')"
-            :label="editingRule.package || ''"
-            is-link
-            @click="appPickerShow = true"
-          />
-        </van-cell-group>
+        <div class="card">
+          <div class="card-title">{{ t('choose_package') }}</div>
+          <div class="config-row" @click="appPickerShow = true" style="cursor: pointer;">
+            <div class="row-text">
+              <span>{{ getLabel(editingRule.package) || t('tap_to_choose') }}</span>
+            </div>
+            <van-icon name="arrow" />
+          </div>
+        </div>
 
-        <van-cell-group inset :title="t('rule_type')">
-          <van-cell>
-            <template #value>
-              <van-radio-group v-model="editingRule.rule_type" direction="horizontal">
-                <van-radio name="restrict">
-                  {{ t('rule_type_restrict') }}
-                  <HelpTooltip :text="t('rule_type_restrict_desc')" />
-                </van-radio>
-                <van-radio name="boost" style="margin-left: 16px;">
-                  {{ t('rule_type_boost') }}
-                  <HelpTooltip :text="t('rule_type_boost_desc')" />
-                </van-radio>
-              </van-radio-group>
-            </template>
-          </van-cell>
-        </van-cell-group>
+        <div class="card">
+          <div class="card-title">{{ t('rule_type') }}</div>
+          <van-radio-group v-model="editingRule.rule_type" direction="horizontal">
+            <van-radio name="restrict">{{ t('rule_type_restrict') }}</van-radio>
+            <van-radio name="boost" style="margin-left: 12px;">{{ t('rule_type_boost') }}</van-radio>
+          </van-radio-group>
+          <div class="hint">{{ t('rule_type_' + editingRule.rule_type + '_desc') }}</div>
+        </div>
 
-        <van-cell-group inset :title="t('rule_strength')">
-          <van-cell>
-            <template #value>
-              <van-radio-group v-model="editingRule.strength" direction="horizontal">
-                <van-radio name="light">{{ t('rule_strength_light') }}</van-radio>
-                <van-radio name="medium" style="margin-left: 12px;">{{ t('rule_strength_medium') }}</van-radio>
-                <van-radio name="heavy" style="margin-left: 12px;">{{ t('rule_strength_heavy') }}</van-radio>
-              </van-radio-group>
-            </template>
-          </van-cell>
-        </van-cell-group>
+        <div class="card">
+          <div class="card-title">{{ t('rule_strength') }}</div>
+          <van-radio-group v-model="editingRule.strength" direction="horizontal">
+            <van-radio name="light">{{ t('rule_strength_light') }}</van-radio>
+            <van-radio name="medium" style="margin-left: 12px;">{{ t('rule_strength_medium') }}</van-radio>
+            <van-radio name="heavy" style="margin-left: 12px;">{{ t('rule_strength_heavy') }}</van-radio>
+          </van-radio-group>
+        </div>
 
-        <van-cell-group inset :title="t('auto_derived_preview')">
-          <van-cell :title="t('preview_max_freq_scale')" :value="previewValues.max_freq_scale.toFixed(2)">
-            <template #right-icon>
+        <div class="card">
+          <div class="card-title">{{ t('auto_derived_preview') }}</div>
+          <div class="config-row">
+            <div class="row-text">
+              <span>{{ t('preview_max_freq_scale') }}</span>
               <HelpTooltip :text="t('preview_max_freq_scale_desc')" />
-            </template>
-          </van-cell>
-          <van-cell :title="t('preview_target_util_offset')" :value="(editingRule.target_util_offset ?? previewValues.target_util_offset) + ''">
-            <template #right-icon>
+            </div>
+            <span class="val">{{ previewValues.max_freq_scale.toFixed(2) }}</span>
+          </div>
+          <div class="config-row">
+            <div class="row-text">
+              <span>{{ t('preview_target_util_offset') }}</span>
               <HelpTooltip :text="t('preview_target_util_offset_desc')" />
-            </template>
-          </van-cell>
-        </van-cell-group>
+            </div>
+            <span class="val">{{ editingRule.target_util_offset ?? previewValues.target_util_offset }}</span>
+          </div>
+        </div>
 
-<style scoped>
-.fas-only-banner {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 16px;
-  background: #fff7e8;
-  border-bottom: 1px solid #ffd591;
-  color: #874d00;
-  font-size: 13px;
-  line-height: 1.4;
-}
-.banner-text { flex: 1; }
-.add-bar { margin: 12px 16px; }
-.empty {
-  padding: 32px 0;
-  text-align: center;
-  color: #999;
-}
-.empty p { margin: 8px 0 0; font-size: 13px; }
-.edit-popup { background: #f7f8fa; min-height: 100%; }
-</style>
-        <van-cell-group inset :title="t('advanced_options')">
-          <van-cell :title="t('disable_burst')">
-            <template #value>
-              <van-switch v-model="editingRule.disable_burst" />
-            </template>
-            <template #right-icon>
+        <div class="card">
+          <div class="card-title">{{ t('advanced_options') }}</div>
+          <div class="config-row">
+            <div class="row-text">
+              <span>{{ t('disable_burst') }}</span>
               <HelpTooltip :text="t('disable_burst_desc')" />
-            </template>
-          </van-cell>
-          <van-cell :title="t('boost_threshold_offset')">
-            <template #value>
-              <van-stepper
-                v-model="editingRule.boost_threshold_offset"
-                :min="-10"
-                :max="10"
-                :step="1"
-              />
-            </template>
-            <template #right-icon>
+            </div>
+            <van-switch v-model="editingRule.disable_burst" />
+          </div>
+          <div class="config-row">
+            <div class="row-text">
+              <span>{{ t('boost_threshold_offset') }}</span>
               <HelpTooltip :text="t('boost_threshold_offset_desc')" />
-            </template>
-          </van-cell>
-        </van-cell-group>
-
-        <div style="padding: 16px;">
-          <van-button type="primary" block @click="onSave">{{ t('save') }}</van-button>
+            </div>
+            <van-stepper v-model="editingRule.boost_threshold_offset" :min="-10" :max="10" :step="1" />
+          </div>
         </div>
       </div>
     </van-popup>
 
     <van-popup v-model:show="appPickerShow" position="bottom" round :style="{ height: '60%' }">
-      <van-nav-bar :title="t('choose_package')" />
+      <div class="page-header"><span class="page-title">{{ t('choose_package') }}</span></div>
       <van-search v-model="appSearchText" :placeholder="t('search_app_or_pkg')" />
       <van-cell
         v-for="pkg in filteredAppsForPicker"
@@ -283,3 +216,122 @@ const pickApp = (pkg: string) => {
     </van-popup>
   </div>
 </template>
+<style scoped>
+.rule-page {
+  padding: 0;
+  max-width: 600px;
+  margin: 0 auto;
+}
+.page-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px;
+}
+.page-title { font-size: 20px; font-weight: 600; }
+.fas-only-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  color: var(--warning);
+  font-size: 13px;
+  line-height: 1.4;
+  margin: 0 12px 12px;
+  border-radius: 8px;
+}
+.banner-text { flex: 1; }
+.rule-list { padding: 0 12px; }
+.rule-card {
+  background: var(--bg-card);
+  border-radius: 12px;
+  padding: 12px;
+  margin-bottom: 8px;
+  border: 1px solid var(--border);
+  cursor: pointer;
+}
+.rule-card:active { background: var(--bg-card-hover); }
+.rule-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.rule-name { font-size: 14px; color: var(--text-primary); font-weight: 600; }
+.rule-pkg {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: monospace;
+  margin-top: 2px;
+}
+.rule-meta {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+.rule-tag {
+  background: rgba(76, 154, 255, 0.15);
+  color: var(--accent);
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+}
+.rule-tag.boost {
+  background: rgba(245, 158, 11, 0.15);
+  color: var(--warning);
+}
+.rule-tag.restrict {
+  background: rgba(16, 185, 129, 0.15);
+  color: var(--success);
+}
+.empty {
+  padding: 60px 0;
+  text-align: center;
+  color: var(--text-muted);
+}
+.empty p { margin: 12px 0 0; font-size: 13px; }
+
+.edit-popup { background: var(--bg-base); min-height: 100%; }
+
+.card {
+  background: var(--bg-card);
+  border-radius: 12px;
+  padding: 16px;
+  margin: 12px;
+  border: 1px solid var(--border);
+}
+.card-title {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 12px;
+  color: var(--accent);
+}
+.config-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+}
+.config-row:first-of-type { border-top: 0; }
+.row-text {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  font-size: 13px;
+}
+.val {
+  font-size: 13px;
+  color: var(--accent);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.hint {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 8px;
+  line-height: 1.5;
+}
+</style>

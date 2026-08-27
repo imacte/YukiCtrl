@@ -29,7 +29,7 @@ pub fn get_rules_path() -> PathBuf { common::get_module_root().join("rules.yaml"
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct RulesConfig {
-    #[serde(default = "crate::utils::default_true")] pub yumi_scheduler: bool,
+    #[serde(default = "crate::utils::default_true")] pub core_pilot_scheduler: bool,
     pub dynamic_enabled: bool,
     pub global_mode: String,
     pub app_modes: HashMap<String, String>,

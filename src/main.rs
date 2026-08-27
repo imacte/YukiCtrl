@@ -54,7 +54,7 @@ fn main() -> Result<()> {
     // 4. 初始化日志
     logger::init(&config.meta.loglevel)?; 
     
-    info!("{}", t("yumi-module-starting"));
+    info!("{}", t("core-pilot-module-starting"));
 
     // 3. 创建通信通道
     let (tx, rx) = mpsc::channel::<common::DaemonEvent>();

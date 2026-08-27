@@ -8,7 +8,7 @@
 // 这些测试在 RED 阶段应该失败, 因为 src/scheduler/cpu_load_governor.rs
 // 当前只有 ClusterState (per-policy), 还没有 CpuState (per-cpu).
 
-use yumi::scheduler::cpu_load_governor::{CpuState, CpuPidConfig, CpuStateError};
+use core-pilot::scheduler::cpu_load_governor::{CpuState, CpuPidConfig, CpuStateError};
 
 /// 构造一个最小可用的 CpuPidConfig 用于测试.
 /// 频率表必须单调递增 (CPU 驱动的实际可用频率表都是这样).

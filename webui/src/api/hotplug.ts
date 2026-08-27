@@ -18,7 +18,7 @@
 
 import { Bridge } from '@/utils/bridge'
 
-const HOTPLUG_DIR = '/data/adb/modules/yumi/hotplug'
+const HOTPLUG_DIR = '/data/adb/modules/core-pilot/hotplug'
 
 export interface HotplugState {
   /** 8-bit bitmask, bit N = cpu N online */
@@ -69,7 +69,7 @@ export async function fetchHotplugState(): Promise<HotplugState> {
  */
 export async function saveHotplugConfig(cfg: HotplugConfig): Promise<void> {
   const body =
-    `# yumi hotplug user config (written by WebUI)\n` +
+    `# core-pilot hotplug user config (written by WebUI)\n` +
     `lockscreen_onoff: ${cfg.lockscreen_onoff}\n` +
     `screens_onoff: ${cfg.screens_onoff}\n` +
     `off_threshold_idle_pct: ${cfg.off_threshold_idle_pct}\n` +

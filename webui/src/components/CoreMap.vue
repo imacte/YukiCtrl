@@ -62,7 +62,7 @@ onUnmounted(() => {
 
     <div v-if="error" class="banner-error">
       ⚠️ daemon 通信失败: {{ error }}
-      <br />提示: 请去 KSU Manager → Superuser → yumi → 模块设置 → 允许 sysfs 读写 (D7)
+      <br />提示: 请去 KSU Manager → Superuser → core-pilot → 模块设置 → 允许 sysfs 读写 (D7)
     </div>
 
     <div class="cpu-grid">

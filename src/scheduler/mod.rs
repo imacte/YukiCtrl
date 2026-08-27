@@ -271,7 +271,11 @@ pub fn start_scheduler_thread(rx: mpsc::Receiver<DaemonEvent>) -> Result<()> {
             // 事件循环包在 catch_unwind 中：任何 panic 都被捕获并记录，
             // 避免调度线程静默死亡（进程存活但频率停在最后状态）
             let loop_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            // 任务 #6 reliability: scheduler 主循环心跳. 每次成功处理一个事件
+            // 都 tick 一次. 如果 app_detect 线程卡住但 scheduler 仍在处理事件
+            // (例如收到 DaemonEvent), watchdog 仍然能收到心跳, 不会误杀.
             for msg in rx {
+                crate::watchdog::heartbeat_tick();
                 match msg {
                     // --- 1. 屏幕状态事件 (息屏深度睡眠) ---
                     DaemonEvent::ScreenStateChange(screen_on) => {

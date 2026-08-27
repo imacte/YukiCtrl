@@ -7,7 +7,7 @@
 
 import { Bridge } from '@/utils/bridge'
 
-const SENSE_PATH = '/data/adb/modules/yumi/sense/snapshot.yaml'
+const SENSE_PATH = '/data/adb/modules/core-pilot/sense/snapshot.yaml'
 
 /**
  * 与后端 SenseSnapshot + snapshot_writer.rs 输出字段一一对应.

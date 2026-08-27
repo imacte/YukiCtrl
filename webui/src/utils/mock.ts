@@ -1,6 +1,6 @@
 // src/utils/mock.ts
 const mockRules = {
-  yumi_scheduler: true,
+  core_pilot_scheduler: true,
   dynamic_enabled: true,
   global_mode: "powersave",
   app_modes: {
@@ -86,7 +86,7 @@ export const MockBridge = {
   async saveMainConfig(config: any): Promise<void> { await delay(400); Object.assign(mockConfig, config); },
   async getDaemonLog(): Promise<string> {
     await delay(300);
-    return `[2026-02-23 02:31:07] [INFO] [yumi] daemon is running smoothly.\n[2026-02-23 02:48:18] [INFO] [Scheduler] Active mode: ${simulatedModeTxt}`;
+    return `[2026-02-23 02:31:07] [INFO] [core-pilot] daemon is running smoothly.\n[2026-02-23 02:48:18] [INFO] [Scheduler] Active mode: ${simulatedModeTxt}`;
   },
   async getCpuPolicies(): Promise<number[]> { return []; },
   async getAvailableFreqs(policyNum: number): Promise<string[]> { return []; },

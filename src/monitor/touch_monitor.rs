@@ -120,10 +120,17 @@ fn is_touch_up(ev: &InputEvent) -> bool {
 fn find_touch_device() -> Option<String> {
     if let Ok(dev) = std::env::var("TOUCH_DEV") {
         if !dev.is_empty() && Path::new(&dev).exists() {
+            info!("[touch_monitor] TOUCH_DEV env override: {}", dev);
             return Some(dev);
         }
     }
-    let dir = std::fs::read_dir("/dev/input").ok()?;
+    let dir = match std::fs::read_dir("/dev/input") {
+        Ok(d) => d,
+        Err(e) => {
+            warn!("[touch_monitor] cannot read /dev/input: {}", e);
+            return None;
+        }
+    };
     for entry in dir.flatten() {
         let name = entry.file_name();
         let s = name.to_string_lossy();
@@ -142,19 +149,26 @@ fn find_touch_device() -> Option<String> {
 fn probe_touch_device(path: &str) -> bool {
     let f = match File::open(path) {
         Ok(f) => f,
-        Err(_) => return false,
+        Err(e) => {
+            warn!("[touch_monitor] open({}) failed: {}", path, e);
+            return false;
+        },
     };
     let fd = f.as_raw_fd();
     let mut buf = [0u8; 256];
     let res = unsafe {
-        libc::ioctl(fd, 0x80_00_45_06u32 as _, buf.as_mut_ptr())
+        libc::ioctl(fd, 0x81_00_45_06u32 as _, buf.as_mut_ptr())
     };
     if res < 0 {
+        let err = std::io::Error::last_os_error();
+        warn!("[touch_monitor] ioctl(EVIOCGNAME) on {} failed: {}", path, err);
+        // 尝试用 EVIOCGBIT(0) 1 byte 判断 EV 能力作为兜底
         return false;
     }
     let name_end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
     let name = String::from_utf8_lossy(&buf[..name_end]).to_lowercase();
-    name.contains("touch")
+    // 扩展关键词: 小米 14 Pro synaptics_tcm_touch 应该匹配 'synaptics' 或 'touch'
+    let matches = name.contains("touch")
         || name.contains("synaptics")
         || name.contains("goodix")
         || name.contains("atmel")
@@ -162,6 +176,10 @@ fn probe_touch_device(path: &str) -> bool {
         || name.contains("qdti")
         || name.contains("nt36xxx")
         || name.contains("himax")
+        || name.contains("mi_touch")
+        || name.contains("xiaomi");
+    info!("[touch_monitor] probed {}: name={:?} match={}", path, String::from_utf8_lossy(&buf[..name_end]), matches);
+    matches
 }
 
 /// 全局停止标志 — daemon 主流程退出时调用 `request_stop_touch_monitor()`.

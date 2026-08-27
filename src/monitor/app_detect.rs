@@ -115,7 +115,7 @@ fn is_valid_user_app(pkg: &str, ignored_apps: &[String]) -> bool {
         "android.hardware.graphics.composer" => false,
         "com.android.phone" => false,
         "com.android.permissioncontroller" => false,
-        "yumi" => false,
+        "core-pilot" => false,
         "com.xiaomi.vtcamera" => false,
         "com.android.providers.media.module" => false,
         "com.google.android.gms.ui" => false,
@@ -184,7 +184,7 @@ fn determine_mode(config: &RulesConfig, current_package: &str) -> String {
 
 pub fn get_default_rules() -> RulesConfig {
     RulesConfig {
-        yumi_scheduler: true,
+        core_pilot_scheduler: true,
         dynamic_enabled: true,
         global_mode: "balance".to_string(),
         app_modes: HashMap::new(),
@@ -249,6 +249,11 @@ pub fn app_detection_loop(
     let mut debounce_start = Instant::now();
     
     loop {
+        // 任务 #6 reliability: heartbeat_tick() 必须放在循环顶部、在任何
+        // 可能阻塞的操作之前. 这样即便下方任意一个 lock() 或 read_file_content()
+        // 出现卡顿, watchdog 至少能收到 "循环还在转" 的信号. 间隔 = 一次迭代
+        // 时长, 屏亮 ~1.5s, 屏息 ~1s, 远小于 HEARTBEAT_TIMEOUT_SEC (15s).
+        crate::watchdog::heartbeat_tick();
         let force_refresh = force_refresh_arc.swap(false, Ordering::SeqCst);
         let current_screen_state = { *screen_state_arc.lock().unwrap() };
         
@@ -266,6 +271,8 @@ pub fn app_detection_loop(
         }
 
         if !current_screen_state { 
+            // 屏息分支: 不做 cgroup 探测, 但 heartbeat_tick 已在 loop 顶部
+            // 写过, 这里 sleep 1s 即可, watch 上不会超时.
             thread::sleep(Duration::from_secs(1));
             continue;
         }

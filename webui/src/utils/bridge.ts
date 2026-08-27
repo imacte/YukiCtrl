@@ -10,7 +10,7 @@ declare global {
   }
 }
 
-const MODULE_BASE_PATH = "/data/adb/modules/yumi"; 
+const MODULE_BASE_PATH = "/data/adb/modules/core-pilot"; 
 const PATHS = {
   RULES_YAML: `${MODULE_BASE_PATH}/rules.yaml`,          
   CONFIG_YAML: `${MODULE_BASE_PATH}/config/config.yaml`, 
@@ -23,7 +23,7 @@ const isDev = import.meta.env.DEV || typeof window.ksu === 'undefined';
 const RealBridge = {
   async isDaemonRunning(): Promise<boolean> {
     try {
-      const { errno, stdout } = await exec(`pidof yumi`);
+      const { errno, stdout } = await exec(`pidof core-pilot`);
       return errno === 0 && stdout.trim().length > 0;
     } catch (e) {
       return false;

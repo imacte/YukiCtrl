@@ -11,7 +11,7 @@
 //   disable_burst?: boolean
 //   boost_threshold_offset?: number
 //
-// 存储位置: /data/adb/modules/yumi/config/config.yaml 的根 `app_rules:` 数组.
+// 存储位置: /data/adb/modules/core-pilot/config/config.yaml 的根 `app_rules:` 数组.
 // 加载方式: cat config.yaml → yaml.load → 读 .app_rules →
 // 保存方式: 读完整 yaml → 改 .app_rules → 写回 (保留其他字段).
 
@@ -33,7 +33,7 @@ export interface AppRule {
   boost_threshold_offset?: number
 }
 
-const CONFIG_PATH = '/data/adb/modules/yumi/config/config.yaml'
+const CONFIG_PATH = '/data/adb/modules/core-pilot/config/config.yaml'
 
 /**
  * 读取 config.yaml, 返回所有 App 规则.

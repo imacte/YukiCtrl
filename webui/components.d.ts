@@ -11,24 +11,21 @@ export {}
 /* prettier-ignore */
 declare module 'vue' {
   export interface GlobalComponents {
+    CoreMap: typeof import('./src/components/CoreMap.vue')['default']
+    HelpTooltip: typeof import('./src/components/HelpTooltip.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
-    VanActionSheet: typeof import('vant/es')['ActionSheet']
+    VanButton: typeof import('vant/es')['Button']
     VanCell: typeof import('vant/es')['Cell']
-    VanCellGroup: typeof import('vant/es')['CellGroup']
-    VanCollapse: typeof import('vant/es')['Collapse']
     VanConfigProvider: typeof import('vant/es')['ConfigProvider']
-    VanDialog: typeof import('vant/es')['Dialog']
-    VanField: typeof import('vant/es')['Field']
-    VanGrid: typeof import('vant/es')['Grid']
-    VanGridItem: typeof import('vant/es')['GridItem']
     VanIcon: typeof import('vant/es')['Icon']
-    VanList: typeof import('vant/es')['List']
     VanLoading: typeof import('vant/es')['Loading']
-    VanNavBar: typeof import('vant/es')['NavBar']
+    VanPopup: typeof import('vant/es')['Popup']
+    VanRadio: typeof import('vant/es')['Radio']
+    VanRadioGroup: typeof import('vant/es')['RadioGroup']
     VanSearch: typeof import('vant/es')['Search']
-    VanTab: typeof import('vant/es')['Tab']
-    VanTabs: typeof import('vant/es')['Tabs']
-    VanTag: typeof import('vant/es')['Tag']
+    VanSlider: typeof import('vant/es')['Slider']
+    VanStepper: typeof import('vant/es')['Stepper']
+    VanSwitch: typeof import('vant/es')['Switch']
   }
 }

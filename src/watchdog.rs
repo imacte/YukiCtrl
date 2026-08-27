@@ -153,9 +153,13 @@ fn try_recover(reason: &'static str) {
     error!("[watchdog] recovery attempt #{} triggered by '{}'", attempt, reason);
 
     let script_path = resolve_restore_script_path();
+    // MODDIR 必须显式传给子 shell —— restore_defaults.sh 内部用 $MODDIR 写日志
+    // 默认值已经脚本里兜底, 但传 env 后即便路径未来变化也不用改脚本.
+    let moddir = crate::common::get_module_root().to_string_lossy().into_owned();
     let result = Command::new("/system/bin/sh")
         .arg(&script_path)
         .arg(reason)
+        .env("MODDIR", &moddir)
         .output();
 
     match result {
@@ -193,7 +197,7 @@ fn notify_user(reason: &str, attempt: u64) {
     error!("[watchdog] USER NOTICE: '{}' detected, recovery attempt #{}", reason, attempt);
 
     let tag = "yumi_watchdog";
-    let title = "Yumi 调度异常";
+    let title = "核心领航员调度异常";
     let body = format!(
         "检测到异常: {}。已尝试自愈 {} 次, 持续异常会重启 daemon。",
         reason, attempt
