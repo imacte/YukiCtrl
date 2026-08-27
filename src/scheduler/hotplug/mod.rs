@@ -87,6 +87,33 @@ fn cpu_online_path(cpu_id: u32) -> String {
     format!("/sys/devices/system/cpu/cpu{}/online", cpu_id)
 }
 
+/// 解析内核 /sys/devices/system/cpu/online 的压缩区间格式: "0-7" / "0-3,5-7" / "0,2,4-6"
+fn parse_online_list(s: &str) -> Vec<u32> {
+    let mut out = Vec::new();
+    for part in s.trim().split(',') {
+        let part = part.trim();
+        if part.is_empty() { continue; }
+        if let Some((a, b)) = part.split_once('-') {
+            if let (Ok(a), Ok(b)) = (a.trim().parse::<u32>(), b.trim().parse::<u32>()) {
+                if a <= b && b <= threshold::MAX_CPU_ID {
+                    out.extend(a..=b);
+                }
+            }
+        } else if let Ok(c) = part.parse::<u32>() {
+            if c <= threshold::MAX_CPU_ID {
+                out.push(c);
+            }
+        }
+    }
+    out
+}
+
+/// 读 sysfs 实际在线核列表. 读失败返回 None (跳过本次对账, 不阻塞决策).
+fn read_sysfs_online() -> Option<Vec<u32>> {
+    let s = fs::read_to_string("/sys/devices/system/cpu/online").ok()?;
+    Some(parse_online_list(&s))
+}
+
 fn hotplug_dir() -> PathBuf { common::get_module_root().join(HOTPLUG_DIR) }
 fn config_path() -> PathBuf { hotplug_dir().join(CONFIG_FILE) }
 fn state_path() -> PathBuf { hotplug_dir().join(STATE_FILE) }
@@ -452,6 +479,21 @@ fn run_one_tick(state: &mut HotplugLoopState) -> Result<()> {
     }
     decider.set_keep_cores(selected_keep);
 
+    // 失明对账: sysfs 实际 online ↔ decider 视图.
+    // 外部 (用户 echo 0 > online / 其他 governor) 改核状态时 decider 收不到通知;
+    // 视图漂移会让白名单强制在线分支误以为核还在线而永不拉起.
+    // 对账后: 白名单内核被外部关掉 → 下一 tick 立即进 to_enable (200-400ms 回线);
+    // mark_online_at(false) 打点 disabled_at 不会挡白名单分支 (它 bypass cooldown).
+    if let Some(actual_online) = read_sysfs_online() {
+        for cpu in 0..=threshold::MAX_CPU_ID {
+            let is_on = actual_online.contains(&cpu);
+            if decider.is_cpu_online_view(cpu) != is_on {
+                decider.mark_online_at(cpu, is_on, now_ms);
+                debug!("hotplug: reconcile cpu{} actual_online={} (external drift)", cpu, is_on);
+            }
+        }
+    }
+
     let decision = decider.tick(&loads, thermal_c, fas_panic_now, enabled, touch_down, now_ms);
 
     // Bug 1 彻底修复: decider.tick() 不再改 entry.online (collect-only).
@@ -549,6 +591,40 @@ pub fn init_state_file() -> Result<()> {
 // 由于 GLOBAL_APP_RULE_ENGINE 是 OnceLock, 不能在 #[cfg(test)] 下覆盖,
 // 这里直接测"偏置量计算 + clamp 流程" 的纯函数部分 (与 run_one_tick 内部
 // 逻辑等价). query_app_rule_bias 的端到端联调留在 main 启动后真机验证.
+
+#[cfg(test)]
+mod online_reconcile_tests {
+    use super::*;
+
+    #[test]
+    fn parse_online_list_formats() {
+        // 内核三种典型输出
+        assert_eq!(parse_online_list("0-7"), vec![0, 1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(parse_online_list("0-3,5-7"), vec![0, 1, 2, 3, 5, 6, 7]);
+        assert_eq!(parse_online_list("0,2,4-6"), vec![0, 2, 4, 5, 6]);
+        // 带换行/空格 (cat 回读带 \n)
+        assert_eq!(parse_online_list("0-1\n"), vec![0, 1]);
+        assert_eq!(parse_online_list(" 0-2 , 5 "), vec![0, 1, 2, 5]);
+        // 越界值丢弃 (MAX_CPU_ID=7)
+        assert_eq!(parse_online_list("0-63").len(), 8);
+        assert_eq!(parse_online_list("99"), Vec::<u32>::new());
+        // 畸形输入不出 panic
+        assert_eq!(parse_online_list(""), Vec::<u32>::new());
+        assert_eq!(parse_online_list("a-b"), Vec::<u32>::new());
+        assert_eq!(parse_online_list("7-3"), Vec::<u32>::new()); // 倒序区间丢弃
+    }
+
+    #[test]
+    fn decider_view_query_reflects_mark_online() {
+        let mut d = ThresholdDecider::new(
+            HotplugThresholds::default(), threshold::CpuAllowList::default());
+        assert!(!d.is_cpu_online_view(3), "unknown cpu defaults to offline view");
+        d.mark_online_at(3, true, 1_000);
+        assert!(d.is_cpu_online_view(3));
+        d.mark_online_at(3, false, 2_000);
+        assert!(!d.is_cpu_online_view(3));
+    }
+}
 
 #[cfg(test)]
 mod app_rule_bias_tests {

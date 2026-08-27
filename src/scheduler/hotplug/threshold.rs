@@ -217,18 +217,15 @@ impl ThresholdDecider {
     ) -> HotplugDecision {
         // --- 0. 热保护 (超过配置的温度阈值 → 全开) ---
         if thermal_c >= self.thresholds.thermal_force_all_on_c {
-            let to_enable: Vec<u32> = loads
-                .iter()
-                .filter(|l| !self.state(l.cpu_id).online)
-                .map(|l| l.cpu_id)
+            let to_enable: Vec<u32> = (0..=MAX_CPU_ID)
+                .filter(|&c| !self.state(c).online)
                 .collect();
             // Bug 1 修复: 不调 self.mark, 等 mod.rs 拿到 sysfs 返回才 mark
             // 预填 enable_debounce 防下一 tick 重复决策
             for cpu_id in to_enable.iter().copied() {
-                if let Some(s) = self.per_cpu.get_mut(&cpu_id) {
-                    s.enable_debounce = ENABLE_DEBOUNCE_TICKS;
-                    s.disable_debounce = 0;
-                }
+                let s = self.per_cpu.entry(cpu_id).or_default();
+                s.enable_debounce = ENABLE_DEBOUNCE_TICKS;
+                s.disable_debounce = 0;
             }
             return HotplugDecision {
                 to_enable,
@@ -240,15 +237,13 @@ impl ThresholdDecider {
         // --- 1. 全局禁用 (lockscreen/灭屏) ---
         if !enabled {
             // Bug 1 修复: global bypass 改成只 collect + 预填 debounce
-            let to_enable: Vec<u32> = loads.iter()
-                .filter(|l| !self.state(l.cpu_id).online)
-                .map(|l| l.cpu_id)
+            let to_enable: Vec<u32> = (0..=MAX_CPU_ID)
+                .filter(|&c| !self.state(c).online)
                 .collect();
             for cpu_id in to_enable.iter().copied() {
-                if let Some(s) = self.per_cpu.get_mut(&cpu_id) {
-                    s.enable_debounce = ENABLE_DEBOUNCE_TICKS;
-                    s.disable_debounce = 0;
-                }
+                let s = self.per_cpu.entry(cpu_id).or_default();
+                s.enable_debounce = ENABLE_DEBOUNCE_TICKS;
+                s.disable_debounce = 0;
             }
             return HotplugDecision {
                 to_enable,
@@ -259,17 +254,14 @@ impl ThresholdDecider {
 
         // --- 2. FAS panic: 立即 enable 所有 ---
         if fas_panic {
-            let to_enable: Vec<u32> = loads
-                .iter()
-                .filter(|l| !self.state(l.cpu_id).online)
-                .map(|l| l.cpu_id)
+            let to_enable: Vec<u32> = (0..=MAX_CPU_ID)
+                .filter(|&c| !self.state(c).online)
                 .collect();
             // Bug 1 修复: 不调 self.mark, 等 mod.rs 拿到 sysfs 返回才 mark
             for cpu_id in to_enable.iter().copied() {
-                if let Some(s) = self.per_cpu.get_mut(&cpu_id) {
-                    s.disable_debounce = 0;
-                    s.enable_debounce = ENABLE_DEBOUNCE_TICKS;
-                }
+                let s = self.per_cpu.entry(cpu_id).or_default();
+                s.disable_debounce = 0;
+                s.enable_debounce = ENABLE_DEBOUNCE_TICKS;
             }
             return HotplugDecision {
                 to_enable,
@@ -282,22 +274,22 @@ impl ThresholdDecider {
         // touch_down=true 时立即 collect 所有 offline 核到 to_enable, 写 touch_cooldown_until_ms
         // 在 cooldown 窗口内 (200ms) 不允许 disable
         // Bug 1 修复: 不调 self.mark (它会改 entry.online), 等 mod.rs 拿到 sysfs 返回才 mark
+        // 失明修复: 遍历 0..=7 全集而非 loads — cpu_monitor 只为在线核产出条目,
+        // 离线核不在 loads 里, 旧实现"唤醒全部核心"对失明核永远不生效.
         if touch_down {
-            let to_enable: Vec<u32> = loads.iter()
-                .filter(|l| !self.state(l.cpu_id).online)
-                .map(|l| l.cpu_id).collect();
+            let to_enable: Vec<u32> = (0..=MAX_CPU_ID)
+                .filter(|&c| !self.state(c).online)
+                .collect();
             // 所有核 (含已 online) 刷 cooldown, 防止下一 tick 立刻关掉
-            for load in loads {
-                if let Some(s) = self.per_cpu.get_mut(&load.cpu_id) {
-                    s.touch_cooldown_until_ms = now_ms + TOUCH_PROTECT_MS;
-                }
+            for c in 0..=MAX_CPU_ID {
+                let s = self.per_cpu.entry(c).or_default();
+                s.touch_cooldown_until_ms = now_ms + TOUCH_PROTECT_MS;
             }
             // 给要 enable 的核预填 enable_debounce, 防止下一 tick 重复决策
             for cpu_id in to_enable.iter().copied() {
-                if let Some(s) = self.per_cpu.get_mut(&cpu_id) {
-                    s.enable_debounce = ENABLE_DEBOUNCE_TICKS;
-                    s.disable_debounce = 0;
-                }
+                let s = self.per_cpu.entry(cpu_id).or_default();
+                s.enable_debounce = ENABLE_DEBOUNCE_TICKS;
+                s.disable_debounce = 0;
             }
             return HotplugDecision {
                 to_enable, to_disable: vec![], external_override: vec![],
@@ -319,13 +311,16 @@ impl ThresholdDecider {
         // 典型场景: 息屏白名单 [0,1] → 亮屏切 [0..5], cpu2-5 应在下个 tick 立刻回线上,
         // 否则亮屏瞬间只剩 2 个小核跑, 用户感觉卡顿 (任务 A 的动机).
         // Bug 1 约束不变: 只收集列表, 等 mod.rs sysfs 写成功后才 mark_online.
-        for load in loads.iter() {
-            if self.allow_list.is_protected(load.cpu_id) && !self.state(load.cpu_id).online {
-                to_enable.push(load.cpu_id);
-                if let Some(s) = self.per_cpu.get_mut(&load.cpu_id) {
-                    s.enable_debounce = ENABLE_DEBOUNCE_TICKS; // 防下一 tick 重复决策
-                    s.disable_debounce = 0;
-                }
+        // 失明修复 (真机 bug): cpu_monitor 只为在线核产出 load 条目, 离线保护核不在
+        // loads 里, 旧实现遍历 loads 永远看不到它们 → cpu3/5 滞留离线且 min_online
+        // 只能拦关不能拉起. 改为遍历 0..=MAX_CPU_ID 全集 (per_cpu.keys() 不行 —
+        // 初始空 map / 从未被 mark 的核同样失明).
+        for cpu_id in 0..=MAX_CPU_ID {
+            if self.allow_list.is_protected(cpu_id) && !self.state(cpu_id).online {
+                to_enable.push(cpu_id);
+                let s = self.per_cpu.entry(cpu_id).or_default();
+                s.enable_debounce = ENABLE_DEBOUNCE_TICKS; // 防下一 tick 重复决策
+                s.disable_debounce = 0;
             }
         }
 
@@ -427,6 +422,13 @@ impl ThresholdDecider {
             }
         }
         mask
+    }
+
+    /// decider 视图中单核的 online 状态 (供 mod.rs 与 sysfs 实际值对账).
+    /// 外部 (用户 echo / 其他 governor) 改核状态时 decider 收不到通知,
+    /// 视图漂移会让白名单强制在线分支误以为核还在线而永不拉起.
+    pub fn is_cpu_online_view(&self, cpu_id: u32) -> bool {
+        self.state(cpu_id).online
     }
 
     pub fn thresholds(&self) -> HotplugThresholds {
@@ -641,5 +643,72 @@ mod tests {
         assert!(!dec.to_enable.contains(&6), "enable debounce needs 2 ticks");
         let dec = d.tick(&[load(6, 0.0)], 45.0, false, true, false, 12_700);
         assert!(dec.to_enable.contains(&6), "must be enable-able after cooldown");
+    }
+
+    // ============ 失明死锁回归 (真机 bug 2026-08-27): 离线核脱离 loads 视野 ============
+    //
+    // 根因: cpu_monitor 只为在线核产出 load 条目 (只遍历 online_cpus_list),
+    // 离线核完全不在 loads 里. 旧实现的拉起路径全部遍历 loads → 保护核一旦在
+    // 合法窗口 (灭屏白名单切换 / 短暂 idle) 被摘, 就再无路径能拉起, 永久滞留离线
+    // (真机观测: online_mask=0x17={0,1,2,4}, 白名单 [0..5] 内的 cpu3/5 失明).
+    // 注意: 这些测试的 loads 故意只含在线核 — 与生产数据形状一致;
+    // 旧测试 protected_core_marked_offline_is_force_enabled 给离线核手工造了
+    // load 条目, 与生产不符, 因此没能拦住这个 bug.
+
+    #[test]
+    fn whitelist_force_online_sees_blind_offline_cores() {
+        // 用户指定场景: online={0,1,2,4} (mask 0x17), 白名单 [0..5]
+        // → tick 后 cpu3 和 cpu5 必须出现在 to_enable (1 tick 内)
+        let mut d = ThresholdDecider::new(HotplugThresholds::default(),
+            CpuAllowList::from_keep_cores(&[0, 1, 2, 3, 4, 5]));
+        for i in [0u32, 1, 2, 4] { d.mark_online(i, true); }
+        // 关键: loads 只含在线核 (生产形状), cpu3/5 "失明"
+        let loads = vec![load(0, 50.0), load(1, 50.0), load(2, 50.0), load(4, 50.0)];
+        let dec = d.tick(&loads, 45.0, false, true, false, 10_000);
+        assert!(dec.to_enable.contains(&3), "blind offline protected cpu3 must be force-enabled");
+        assert!(dec.to_enable.contains(&5), "blind offline protected cpu5 must be force-enabled");
+        // 非保护失明核 (cpu6/7) 不被白名单分支误拉 — 它们仍由负载 enable 决策管理
+        assert!(!dec.to_enable.contains(&6) && !dec.to_enable.contains(&7),
+            "non-protected blind cores must not be woken by whitelist branch, got {:?}",
+            dec.to_enable);
+    }
+
+    #[test]
+    fn touch_bypass_sees_blind_offline_cores() {
+        // 触摸旁路语义 = "唤醒全部核心"; 离线核不在 loads 里时旧实现同样拉不起
+        let mut d = ThresholdDecider::new(HotplugThresholds::default(), CpuAllowList::default());
+        for i in [0u32, 1, 2, 4] { d.mark_online(i, true); }
+        let loads = vec![load(0, 50.0), load(1, 50.0), load(2, 50.0), load(4, 50.0)];
+        let dec = d.tick(&loads, 45.0, false, true, true, 10_000); // touch_down=true
+        for c in [3u32, 5, 6, 7] {
+            assert!(dec.to_enable.contains(&c), "touch must wake blind offline cpu{}", c);
+        }
+    }
+
+    #[test]
+    fn screen_off_to_on_restores_whitelist_within_2_ticks() {
+        // 端到端: 灭屏白名单 [0,1], cpu2-5 被摘 (loads 同步失明, 只剩 cpu0/1);
+        // 亮屏切 [0..5] → 第 1 tick cpu2-5 全部进 to_enable;
+        // mod.rs sysfs 写成功 mark_online 后, 第 2 tick 幂等 (不重复决策)
+        let mut d = ThresholdDecider::new(HotplugThresholds::default(),
+            CpuAllowList::from_keep_cores(&[0, 1]));
+        for i in [0u32, 1] { d.mark_online(i, true); }
+        let loads = vec![load(0, 50.0), load(1, 50.0)];
+        let dec = d.tick(&loads, 45.0, false, true, false, 10_000);
+        assert!(dec.to_enable.is_empty() && dec.to_disable.is_empty(),
+            "screen-off whitelist [0,1] with only cpu0/1 online: nothing to do");
+
+        // 亮屏: 白名单切换 (mod.rs 每 tick 调 set_keep_cores)
+        d.set_keep_cores(&[0, 1, 2, 3, 4, 5]);
+        let dec = d.tick(&loads, 45.0, false, true, false, 10_200);
+        for c in [2u32, 3, 4, 5] {
+            assert!(dec.to_enable.contains(&c),
+                "cpu{} must be force-enabled on screen-on tick 1", c);
+        }
+        // 模拟 mod.rs 写 sysfs 成功 → mark_online_at; 第 2 tick 必须幂等
+        for c in [2u32, 3, 4, 5] { d.mark_online_at(c, true, 10_200); }
+        let dec = d.tick(&loads, 45.0, false, true, false, 10_400);
+        assert!(dec.is_empty(),
+            "tick 2 must be idempotent after mark_online, got to_enable={:?}", dec.to_enable);
     }
 }
