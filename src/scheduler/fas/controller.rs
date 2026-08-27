@@ -16,8 +16,9 @@
  */
 
 use crate::fas_types::{FasRulesConfig, PerAppProfile};
+use crate::monitor::sense_snapshot::{sense_now, SenseSnapshot};
 use std::time::Instant;
-use log::{info, warn};
+use log::{debug, info, warn};
 
 use crate::i18n::t_with_args;
 use crate::fluent_args;
@@ -104,11 +105,28 @@ pub struct FasController {
     // util_cap EMA 平滑值，防止 200ms 采样周期的滞后数据造成断崖
     pub(super) ema_fg_util: f32,
 
+    // ─── Phase 2 / ticket-06: 综合压力指数 ───
+    /// 当前模式的 target_pressure (0..=100). 由 scheduler::mod.rs::ModeChange 事件更新.
+    /// 默认 balance = 60.
+    pub(super) target_pressure: f32,
+    /// 最近一次算出的综合压力指数 (EMA 平滑). 供 `pid.compute()` 当 fg_util 替代.
+    pub(super) ema_pressure_index: f32,
+    /// 最近一次 frame_drop_active 状态 (用于压力指数的 frame 项权重).
+    pub(super) last_frame_drop_active: bool,
+
     // [Jank 恢复保护] crit/heavy 后的 perf 最低值保护
     // 防止恢复帧到来后 PID 在 2-3 帧内将 perf 从 1.0 衰减到 floor，
     // 导致后续帧频率不足再次 jank 形成连锁掉帧
     pub(super) post_jank_perf_floor: f32,
     pub(super) post_jank_guard_frames: u32,
+
+    // ─── 需求: 亮/息屏双套帧参数 (set_frame_params) ───
+    /// 掉帧提频总开关 (modules.frame.{screen_on,screen_off}.boost_enabled)
+    pub(super) frame_boost_enabled: bool,
+    /// 提频强度缩放 0..=2 (1.0 = 标准幅度; 缩放 cfg.downgrade_boost_perf_inc)
+    pub(super) frame_boost_strength: f32,
+    /// 首次 set_frame_params 时记录的 boost 增量基准 (未缩放值)
+    pub(super) frame_boost_base_inc: Option<f32>,
 
     // [动态 PID] 基于 CPU 利用率的 target_fps 偏移
     // 范围 [-3.0, 0.0]：当 CPU 利用率持续偏低时逐步降低有效 target_fps，
@@ -163,6 +181,12 @@ impl FasController {
             active_profile: None,
             floor_stuck_frames: 0,
             ema_fg_util: 0.0,
+            target_pressure: 60.0,        // balance default
+            ema_pressure_index: 0.0,
+            last_frame_drop_active: false,
+            frame_boost_enabled: true,
+            frame_boost_strength: 1.0,
+            frame_boost_base_inc: None,
             post_jank_perf_floor: 0.0,
             post_jank_guard_frames: 0,
             target_fps_offset: 0.0,
@@ -177,6 +201,7 @@ impl FasController {
 
     /// 更新前台最重线程的 CPU 利用率
     pub fn update_cpu_util(&mut self, fg_util: f32) {
+        let prev = self.ema_fg_util;
         self.foreground_max_util = fg_util;
         // EMA smooth fg_util to prevent 200ms sampling lag causing cliff drops
         if self.ema_fg_util <= 0.001 {
@@ -186,6 +211,10 @@ impl FasController {
             let alpha = if fg_util > self.ema_fg_util { 0.40 } else { 0.15 };
             self.ema_fg_util = self.ema_fg_util * (1.0 - alpha) + fg_util * alpha;
         }
+        debug!(
+            "[fas] update_cpu_util fg_util={:.2} ema {:.2} -> {:.2}",
+            fg_util, prev, self.ema_fg_util,
+        );
     }
 
     /// 更新各核心利用率快照
@@ -246,28 +275,30 @@ impl FasController {
         self.pid.adapt_to_target_fps(self.current_target_fps);
     }
 
-    /// 基于 CPU 利用率动态偏移 target_fps
+    /// 基于综合压力指数动态偏移 target_fps (Phase 2 / ticket-06)
     ///
-    /// 每秒采样一次 ema_fg_util：
-    ///   util ≤ 0.10 → 重置偏移 (可能在菜单/暂停画面)
-    ///   util ≤ 0.55 → 逐步降低 target (-0.1/s)，最多 -3fps
-    ///   util ≥ 0.65 → 逐步恢复 (+0.1/s) 至 0
+    /// 输入从 "CPU 利用率 0..1" 改为 "压力指数 0..100". 每秒采样一次 ema_pressure_index:
+    ///   idx <= 30   → 压力太低, 重置偏移 (可能在菜单/暂停画面)
+    ///   idx <= 50   → 逐步降低 target (-0.1/s), 最多 -3fps
+    ///   idx >= 70   → 逐步恢复 (+0.1/s) 至 0
     ///
-    /// 效果：GPU bound 场景自动放宽帧率目标，减少无效拉频
+    /// 阈值参考 spec ticket-06 的 target_pressure 默认 60 上下浮 10/20.
+    /// 效果: GPU bound / IO bound 等 "低压力" 场景自动放宽帧率目标, 减少无效拉频.
     pub(super) fn adjust_target_for_util(&mut self) {
         if self.util_sample_timer.elapsed().as_millis() < 1000 { return; }
         self.util_sample_timer = Instant::now();
 
-        // jank_cooldown 期间禁止降低 target，只允许恢复
-        // 防止刚从团战卡顿恢复，util 还没爬满就又把目标降下去
+        // jank_cooldown 期间禁止降低 target, 只允许恢复
+        // 防止刚从团战卡顿恢复, 压力指数还没爬满就又把目标降下去
         let allow_decrease = self.jank_cooldown == 0 && self.jank_streak == 0;
 
-        let util = self.ema_fg_util;
-        if util <= 0.10 {
+        // Phase 2: 用 ema_pressure_index (0..=100) 替代 ema_fg_util (0..1)
+        let idx = self.ema_pressure_index;
+        if idx <= 30.0 {
             self.target_fps_offset = 0.0;
-        } else if util <= 0.55 && allow_decrease {
+        } else if idx <= 50.0 && allow_decrease {
             self.target_fps_offset = (self.target_fps_offset - 0.1).max(-3.0);
-        } else if util >= 0.65 {
+        } else if idx >= 70.0 {
             self.target_fps_offset = (self.target_fps_offset + 0.1).min(0.0);
         }
     }
@@ -284,6 +315,7 @@ impl FasController {
 
     /// 通知 FAS 当前前台游戏变化
     pub fn set_game(&mut self, _pid: i32, package: &str) {
+        debug!("[fas] set_game pid={} pkg={}", _pid, package);
         self.current_package = package.to_string();
         let profile = self.cfg.per_app_profiles.get(package).cloned();
         if let Some(ref p) = profile {
@@ -298,6 +330,10 @@ impl FasController {
                     self.refresh_cached_values();
                 }
             }
+            debug!(
+                "[fas] applied per-app profile pkg={} margin={:.2} gears={:?} target={:.0}",
+                package, self.fps_margin, self.fps_gears, self.current_target_fps,
+            );
             info!("{}", t_with_args("fas-set-game", &fluent_args!(
                 "pkg" => package,
                 "gears" => format!("{:?}", self.fps_gears),
@@ -314,6 +350,7 @@ impl FasController {
 
     /// 通知 FAS 退出游戏
     pub fn clear_game(&mut self) {
+        debug!("[fas] clear_game (was pkg={})", self.current_package);
         self.current_package.clear();
         self.active_profile = None;
         self.foreground_max_util = 0.0;
@@ -327,6 +364,98 @@ impl FasController {
 
     pub fn set_temperature(&mut self, temp: f64) { self.current_temperature = temp; }
     pub fn set_temp_threshold(&mut self, thresh: f64) { self.temp_threshold = thresh; }
+
+    // ════════════════════════════════════════════════════════════
+    //  Phase 2 / ticket-06: 综合压力指数
+    // ════════════════════════════════════════════════════════════
+
+    /// 需求: 亮/息屏双套帧参数 — 由 scheduler 在屏幕状态切换与 config 热重载时调用.
+    ///
+    /// - `jank_margin_ms`: 帧时间超出预算多少 ms 判掉帧 → 换算为 fps_margin
+    ///   (帧数 = ms × 当前目标帧率 / 1000, clamp 0.5..=10)
+    /// - `boost_enabled`: 掉帧提频总开关 (false 时降档 boost 不再触发, 在途 boost 立即撤销)
+    /// - `boost_strength`: 0..=2, 相对基准 (首次调用时的配置值) 缩放提频增量
+    pub fn set_frame_params(&mut self, jank_margin_ms: f32, boost_enabled: bool, boost_strength: f32) {
+        let margin_frames = (jank_margin_ms.max(0.5) * self.current_target_fps / 1000.0)
+            .clamp(0.5, 10.0);
+        self.fps_margin = margin_frames;
+        self.frame_boost_enabled = boost_enabled;
+        self.frame_boost_strength = boost_strength.clamp(0.0, 2.0);
+        if self.frame_boost_base_inc.is_none() {
+            self.frame_boost_base_inc = Some(self.cfg.downgrade_boost_perf_inc);
+        }
+        if let Some(base) = self.frame_boost_base_inc {
+            self.cfg.downgrade_boost_perf_inc = base * self.frame_boost_strength;
+        }
+        if !boost_enabled {
+            self.downgrade_boost_active = false;
+            self.downgrade_boost_remaining = 0;
+        }
+        debug!(
+            "[fas] frame params: jank={:.1}ms(margin={:.1}f) boost={} strength={:.2}",
+            jank_margin_ms, margin_frames, boost_enabled, self.frame_boost_strength
+        );
+    }
+
+    /// 设置当前模式的 target_pressure (0..=100).
+    /// 由 `scheduler::mod.rs::DaemonEvent::ModeChange` 在模式切换时调用.
+    /// 见 `mode_target_pressure()` 的 4 种模式映射表.
+    pub fn set_target_pressure(&mut self, target: f32) {
+        let clamped = target.clamp(0.0, 100.0);
+        debug!(
+            "[fas] set_target_pressure target={:.2} (clamped={:.2})",
+            target, clamped
+        );
+        self.target_pressure = clamped;
+    }
+
+    /// Phase 2 / ticket-07: 设置 target_pressure 同时叠加 App 规则偏置.
+    ///
+    /// 由 scheduler::mod.rs 在 ModeChange 事件或前台包变化时调用:
+    ///   target = mode_target_pressure(mode) + bias.target_util_offset
+    ///   并 clamp 到 [5.0, 95.0] (避免极端值破坏 PID 工作点).
+    ///
+    /// 设计要点:
+    /// - 入口处允许 target < 5 或 > 95 (例如 Restrict Heavy 时 base=60 + (-35)=25
+    ///   仍然合理; 但 base=40 + (-35)=5 是边界, 不应跌破 5 避免 PID 失效)
+    /// - bias=0 时行为与 set_target_pressure 完全一致 (向后兼容)
+    pub fn set_target_pressure_with_app_bias(&mut self, target: f32, bias_offset: i32) {
+        let biased = target + bias_offset as f32;
+        let clamped = biased.clamp(5.0, 95.0);
+        debug!(
+            "[fas] set_target_pressure_with_app_bias base={:.2} bias={} -> biased={:.2} (clamped to 5..=95) = {:.2}",
+            target, bias_offset, biased, clamped,
+        );
+        self.target_pressure = clamped;
+    }
+
+    /// 喂入综合压力指数 (调用方已经在别处算过).
+    /// 这里做 EMA 平滑后存进 self.ema_pressure_index, 供 pid.compute() 替代 fg_util.
+    pub fn update_pressure_index(&mut self, raw: f32, frame_drop_active: bool) {
+        self.last_frame_drop_active = frame_drop_active;
+        let v = raw.clamp(0.0, 100.0);
+        let prev = self.ema_pressure_index;
+        if self.ema_pressure_index <= 0.001 {
+            self.ema_pressure_index = v;
+        } else {
+            // 上升快 (alpha=0.4), 下降慢 (alpha=0.15) — 防止瞬时低值杀掉 perf
+            let alpha = if v > self.ema_pressure_index { 0.40 } else { 0.15 };
+            self.ema_pressure_index = self.ema_pressure_index * (1.0 - alpha) + v * alpha;
+        }
+        debug!(
+            "[fas] update_pressure_index raw={:.2} frame_drop={} ema {:.2} -> {:.2}",
+            v, frame_drop_active, prev, self.ema_pressure_index,
+        );
+    }
+
+    /// 一次性更新: 拉 sense_now() + 调用 compute_pressure_index + EMA 平滑.
+    /// 这是 FAS tick 主循环推荐入口 (替代每帧 push fg_util).
+    pub fn tick_pressure_index(&mut self, frame_drop_active: bool) -> f32 {
+        let snap = sense_now();
+        let p = compute_pressure_index(&snap, frame_drop_active);
+        self.update_pressure_index(p, frame_drop_active);
+        self.ema_pressure_index
+    }
 
     pub(super) fn reset_runtime(&mut self) {
         let floor = self.effective_perf_floor();
@@ -362,5 +491,169 @@ impl FasController {
         self.post_jank_guard_frames = 0;
         self.target_fps_offset = 0.0;
         self.util_sample_timer = Instant::now();
+        // 模式切换时清掉旧压力记忆, 让新模式从 0 开始累
+        self.ema_pressure_index = 0.0;
+        self.last_frame_drop_active = false;
+    }
+}
+
+// ════════════════════════════════════════════════════════════════
+//  Phase 2 / ticket-06: 综合压力指数 (free function)
+//
+//  把八路感知合成一个 0..=100 的标量, 供 PID/调速器当作"系统忙闲度".
+//  不依赖 hotplug 模块, 也不依赖 fas/cpu_load_governor 任何内部状态.
+// ════════════════════════════════════════════════════════════════
+
+/// 综合压力指数 (0..=100).
+///
+/// 权重 (来自 spec ticket-04 / ticket-06):
+/// - cpu_util_avg × 0.40     (CPU 平均利用率, 来自 CpuIdleSnapshot)
+/// - gpu_load_pct × 0.25     (GPU 负载百分比; NaN/0 → 不可用)
+/// - io_psi × 0.15           (IO 压力 PSI avg10 %)
+/// - mem_psi × 0.10          (内存压力 PSI full %)
+/// - (frame_drop_active ? 1.0 : 0.0) × 0.10
+///
+/// **向后兼容**: 任何一路不可用 (NaN/0/不存在) → 该项权重被剔除, 剩余项
+/// 按原比例重新归一化. 例如无 GPU 时:
+///   pressure = cpu×(0.40/0.75) + io×(0.15/0.75) + mem×(0.10/0.75) + frame×(0.10/0.75)
+///
+/// 这样哪怕设备没 GPU devfreq (某些 MTK/老高通), 也不会让公式失真.
+pub fn compute_pressure_index(snap: &SenseSnapshot, frame_drop_active: bool) -> f32 {
+    // ---- 1. CPU 利用率 (0..=100) ----
+    let cpu = snap.cpu_util_avg().clamp(0.0, 100.0);
+    let cpu_available = cpu > 0.0;
+
+    // ---- 2. GPU 负载 (0..=100, NaN 表示没 GPU devfreq) ----
+    let gpu_raw = snap.gpu.load_pct;
+    let gpu_available = gpu_raw.is_finite() && gpu_raw > 0.0;
+    let gpu = if gpu_available { gpu_raw.clamp(0.0, 100.0) } else { 0.0 };
+
+    // ---- 3. IO PSI (avg10 是 0..=100 的百分比) ----
+    let io = snap.io.some_pct.clamp(0.0, 100.0);
+    let io_available = io > 0.0;
+
+    // ---- 4. 内存 PSI (full avg10 是 0..=100 的百分比; swap.monitor 直接 push pct) ----
+    let mem = snap.swap.mem_full_us as f32 / 10_000.0 * 100.0;
+    let mem_clamped = mem.clamp(0.0, 100.0);
+    let mem_available = mem_clamped > 0.0;
+
+    // ---- 5. frame_drop_active (boolean) ----
+    let frame_v = if frame_drop_active { 1.0 } else { 0.0 };
+    let frame_available = true; // boolean 总可用
+
+    // ---- 权重 + 归一化 ----
+    let w_cpu = if cpu_available { 0.40 } else { 0.0 };
+    let w_gpu = if gpu_available { 0.25 } else { 0.0 };
+    let w_io = if io_available { 0.15 } else { 0.0 };
+    let w_mem = if mem_available { 0.10 } else { 0.0 };
+    let w_frame = if frame_available { 0.10 } else { 0.0 };
+    let w_sum = w_cpu + w_gpu + w_io + w_mem + w_frame;
+
+    if w_sum < 0.001 {
+        return 0.0;
+    }
+
+    let raw = cpu * w_cpu + gpu * w_gpu + io * w_io + mem_clamped * w_mem + frame_v * w_frame;
+    (raw / w_sum).clamp(0.0, 100.0)
+}
+
+/// mode 名 → target_pressure 映射.
+///
+/// 与 project 原 4 种模式保持兼容, 只是从 "target_util 偏移" 改成
+/// "target_pressure 目标值" (0..=100). Mode 名 == `scheduler/config.rs::Mode` 字段.
+pub fn mode_target_pressure(mode_name: &str) -> f32 {
+    match mode_name {
+        "powersave" => 40.0,
+        "balance" => 60.0,
+        "performance" => 75.0,
+        "fast" | "extreme" => 85.0,
+        _ => 60.0,
+    }
+}
+
+#[cfg(test)]
+mod pressure_index_tests {
+    use super::*;
+    use crate::monitor::cpu_monitor::CpuIdleEntry;
+    use crate::monitor::sense_snapshot::{GpuState, IoState, SwapState};
+
+    fn make_snap(cpu_utils: Vec<f32>, gpu_load: f32, io_pct: f32, mem_full_us: u64) -> SenseSnapshot {
+        let mut snap = SenseSnapshot::default();
+        snap.cpu.cpus = cpu_utils
+            .into_iter()
+            .enumerate()
+            .map(|(i, util)| CpuIdleEntry {
+                cpu_id: i as u32,
+                idle_pct: 100.0 - util,
+                util_pct: util,
+            })
+            .collect();
+        snap.gpu = GpuState {
+            load_pct: gpu_load,
+            ..Default::default()
+        };
+        snap.io = IoState {
+            some_pct: io_pct,
+            ..Default::default()
+        };
+        snap.swap = SwapState {
+            mem_full_us,
+            ..Default::default()
+        };
+        snap.screen_on = true;
+        snap
+    }
+
+    #[test]
+    fn pressure_full_no_frame_drop() {
+        // cpu 80*0.40 + gpu 60*0.25 + io 30*0.15 + mem 20*0.10 + 0*0.10
+        // = 32 + 15 + 4.5 + 2 + 0 = 53.5
+        let snap = make_snap(vec![80.0; 4], 60.0, 30.0, 2000);
+        let p = compute_pressure_index(&snap, false);
+        assert!((p - 53.5).abs() < 0.001, "got {p}");
+    }
+
+    #[test]
+    fn pressure_full_with_frame_drop() {
+        // 上面 + frame drop → +0.10 → 53.5 + 10 = 63.5
+        let snap = make_snap(vec![80.0; 4], 60.0, 30.0, 2000);
+        let p = compute_pressure_index(&snap, true);
+        assert!((p - 63.5).abs() < 0.001, "got {p}");
+    }
+
+    #[test]
+    fn pressure_no_gpu_renormalize() {
+        // gpu=0 → 不可用, 剩余 cpu/io/mem/frame 权重和 = 0.75
+        // 80*(0.40/0.75) + 30*(0.15/0.75) + 20*(0.10/0.75) + 0
+        // ≈ 42.667 + 6.0 + 2.667 = 51.333
+        let snap = make_snap(vec![80.0; 4], 0.0, 30.0, 2000);
+        let p = compute_pressure_index(&snap, false);
+        assert!((p - 51.333).abs() < 0.01, "got {p}");
+    }
+
+    #[test]
+    fn pressure_zero_when_all_unavailable() {
+        // 全不可用 → 0
+        let snap = make_snap(vec![], 0.0, 0.0, 0);
+        let p = compute_pressure_index(&snap, false);
+        assert_eq!(p, 0.0);
+    }
+
+    #[test]
+    fn pressure_clamps_to_100() {
+        let snap = make_snap(vec![100.0; 8], 100.0, 100.0, 100_000);
+        let p = compute_pressure_index(&snap, true);
+        assert_eq!(p, 100.0);
+    }
+
+    #[test]
+    fn mode_mapping_covers_all_4_modes() {
+        assert_eq!(mode_target_pressure("powersave"), 40.0);
+        assert_eq!(mode_target_pressure("balance"), 60.0);
+        assert_eq!(mode_target_pressure("performance"), 75.0);
+        assert_eq!(mode_target_pressure("extreme"), 85.0);
+        assert_eq!(mode_target_pressure("fast"), 85.0);
+        assert_eq!(mode_target_pressure("unknown"), 60.0);
+        assert_eq!(mode_target_pressure(""), 60.0);
     }
 }

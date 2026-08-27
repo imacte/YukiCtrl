@@ -1,0 +1,10 @@
+# Force LF for shell scripts and YAML/prop files.
+# Without this, Windows checkouts with core.autocrlf=true can re-introduce
+# CRLF line endings, breaking /system/bin/sh on the device.
+*.sh        text eol=lf
+*.yaml      text eol=lf
+*.yml       text eol=lf
+*.prop      text eol=lf
+
+# Rust source — keep as-is (LF), but allow Windows users to read
+*.rs        text eol=lf

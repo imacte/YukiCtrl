@@ -81,8 +81,17 @@ pub fn get_current_pid() -> i32 {
     CURRENT_PID.load(Ordering::Relaxed)
 }
 
+/// Phase 2 / ticket-07: 暴露当前前台包名给其他模块 (App 规则引擎等).
+///
+/// 调用方应假设返回字符串可能为空 (例如 app_detect 线程尚未跑起来,
+/// 或者系统刚启动还没有前台应用). 比较时建议用 `.is_empty()` 守卫.
+pub fn current_package() -> String {
+    CURRENT_PACKAGE.lock().unwrap().clone()
+}
+
 // 在检测到新包名时更新它
 fn set_current_package(pkg: &str, pid: i32) {
+    debug!("[app_detect] set_current_package pkg={} pid={}", pkg, pid);
     *CURRENT_PACKAGE.lock().unwrap() = pkg.to_string();
     CURRENT_PID.store(pid, Ordering::Relaxed);
 }
@@ -107,7 +116,7 @@ fn is_valid_user_app(pkg: &str, ignored_apps: &[String]) -> bool {
         "android.hardware.graphics.composer" => false,
         "com.android.phone" => false,
         "com.android.permissioncontroller" => false,
-        "yumi" => false,
+        "core-pilot" => false,
         "com.xiaomi.vtcamera" => false,
         "com.android.providers.media.module" => false,
         "com.google.android.gms.ui" => false,
@@ -122,19 +131,30 @@ fn is_valid_user_app(pkg: &str, ignored_apps: &[String]) -> bool {
 }
 
 // 提取核心检测逻辑
+//
+// Bugfix: 此前 `pids.iter().rev()` 只取 cgroup.procs 尾部第一个命中 pid —
+// tail 往往是最近迁入的后台残留进程 (非真正焦点应用), 导致 current_pkg
+// 卡死在首个检出值. 现改为统计 top-app 内每个包名的进程数 (Android 主/
+// 渲染/GPU 进程同包名, 天然多票), 取票数最高者 — 与 topResumedActivity 高度一致.
 fn check_cgroup_path(path: &str, ignored_apps: &[String]) -> Option<(String, i32)> {
     if let Ok(content) = utils::read_file_content(path) {
-        let pids: Vec<&str> = content.split_whitespace().collect();
-        for pid_str in pids.iter().rev() {
+        let mut votes: std::collections::HashMap<String, (u32, i32)> =
+            std::collections::HashMap::new();
+        for pid_str in content.split_whitespace() {
             let cmdline_path = format!("/proc/{}/cmdline", pid_str);
-            if let Ok(cmdline) = utils::read_file_content(&cmdline_path) {
-                let pkg_name = cmdline.split('\0').next().unwrap_or("").trim();
-                if is_valid_user_app(pkg_name, ignored_apps) {
-                    let pid = pid_str.parse::<i32>().unwrap_or(0);
-                    return Some((pkg_name.to_string(), pid));
-                }
+            let Ok(cmdline) = utils::read_file_content(&cmdline_path) else { continue };
+            let pkg_name = cmdline.split('\0').next().unwrap_or("").trim();
+            if !is_valid_user_app(pkg_name, ignored_apps) {
+                continue;
             }
+            let pid = pid_str.parse::<i32>().unwrap_or(0);
+            let entry = votes.entry(pkg_name.to_string()).or_insert((0u32, pid));
+            entry.0 += 1;
         }
+        return votes
+            .into_iter()
+            .max_by_key(|(_, (count, _))| *count)
+            .map(|(pkg, (_, pid))| (pkg, pid));
     }
     None
 }
@@ -168,15 +188,21 @@ fn get_focused_app_from_cgroup(ignored_apps: &[String]) -> Result<(String, i32),
 // ==================== [辅助函数] ====================
 
 fn determine_mode(config: &RulesConfig, current_package: &str) -> String {
-    if !config.dynamic_enabled {
-        return config.global_mode.clone();
-    }
-    config.app_modes.get(current_package).cloned().unwrap_or_else(|| config.global_mode.clone())
+    let mode = if !config.dynamic_enabled {
+        config.global_mode.clone()
+    } else {
+        config.app_modes.get(current_package).cloned().unwrap_or_else(|| config.global_mode.clone())
+    };
+    debug!(
+        "[app_detect] determine_mode pkg={} dynamic={} -> mode={}",
+        current_package, config.dynamic_enabled, mode,
+    );
+    mode
 }
 
 pub fn get_default_rules() -> RulesConfig {
     RulesConfig {
-        yumi_scheduler: true,
+        core_pilot_scheduler: true,
         dynamic_enabled: true,
         global_mode: "balance".to_string(),
         app_modes: HashMap::new(),
@@ -241,6 +267,11 @@ pub fn app_detection_loop(
     let mut debounce_start = Instant::now();
     
     loop {
+        // 任务 #6 reliability: heartbeat_tick() 必须放在循环顶部、在任何
+        // 可能阻塞的操作之前. 这样即便下方任意一个 lock() 或 read_file_content()
+        // 出现卡顿, watchdog 至少能收到 "循环还在转" 的信号. 间隔 = 一次迭代
+        // 时长, 屏亮 ~1.5s, 屏息 ~1s, 远小于 HEARTBEAT_TIMEOUT_SEC (15s).
+        crate::watchdog::heartbeat_tick();
         let force_refresh = force_refresh_arc.swap(false, Ordering::SeqCst);
         let current_screen_state = { *screen_state_arc.lock().unwrap() };
         
@@ -258,6 +289,8 @@ pub fn app_detection_loop(
         }
 
         if !current_screen_state { 
+            // 屏息分支: 不做 cgroup 探测, 但 heartbeat_tick 已在 loop 顶部
+            // 写过, 这里 sleep 1s 即可, watch 上不会超时.
             thread::sleep(Duration::from_secs(1));
             continue;
         }
@@ -278,10 +311,12 @@ pub fn app_detection_loop(
                 pending_package = detected_pkg.clone();
                 pending_pid = detected_pid;
                 debounce_start = Instant::now();
+                debug!("[app_detect] detected new pkg={} pid={} (debouncing)", detected_pkg, detected_pid);
             } else if debounce_start.elapsed() >= Duration::from_millis(500) {
                 final_pkg = pending_package.clone();
                 final_pid = pending_pid;
                 pending_package.clear();
+                debug!("[app_detect] debounced confirm pkg={} pid={}", final_pkg, final_pid);
             }
         } else {
             pending_package.clear();
@@ -310,12 +345,31 @@ pub fn app_detection_loop(
                         mode: new_mode.clone(),
                         temperature: current_temp,
                     });
-                    last_mode = new_mode;
+                    last_mode = new_mode.clone();
+                }
+
+                // Phase 2 / ticket-07-fix: 前台包名变化需要通知 scheduler 更新 App 规则偏置.
+                //
+                // 与 ModeChange 的关系:
+                //   - mode 也变了 (last_mode != new_mode): 上方 ModeChange 分支已经会
+                //     通过 apply_app_rule_bias 应用偏置, 不再重复发 AppRuleRefresh, 避免
+                //     scheduler 事件循环处理两次.
+                //   - mode 没变, 只切了前台包: 上方 if 没进 ModeChange 分支, 这里必须
+                //     发 AppRuleRefresh, 否则同模式应用切换下偏置不更新.
+                //
+                // 触发条件: 包变了 AND 模式没变 (last_mode == new_mode 在上方 if 守卫内
+                // 已隐含成立, 因为上方 if 失败 = mode 没变).
+                if last_package != final_pkg && last_mode == new_mode {
+                    let _ = tx.send(DaemonEvent::AppRuleRefresh {
+                        package_name: final_pkg.clone(),
+                    });
                 }
                 last_package = final_pkg;
             }
         }
 
+        // 任务 #6 reliability: 主循环心跳, watchdog 检查时用
+        crate::watchdog::heartbeat_tick();
         thread::sleep(Duration::from_millis(1500));
     }
 }

@@ -1,4 +1,4 @@
-yumi_scheduler: true
+core_pilot_scheduler: true
 dynamic_enabled: true
 global_mode: "powersave"
 

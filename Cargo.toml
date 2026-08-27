@@ -51,3 +51,35 @@ strip = true
 opt-level = "z"
 lto = true
 codegen-units = 1
+# 任务 #6 手机集成验证: NDK r29 不再 ship 独立 libunwind.so,
+# panic=unwind 会让 rustc 注入 -lunwind 链接导致失败.
+# core-pilot 没有 catch_unwind 业务, panic=abort 既能 link 通过又减少 binary 体积.
+panic = "abort"
+
+# ticket-02 baseline: BPF programs in core-pilot-ebpf use LLVM 22+ which removed the
+# `Oz` optimization level. bpf-linker 0.11 passes `-Oz` to LLVM when opt-level=z
+# is requested, which LLVM 22+ rejects with:
+#   "The optimization level 'Oz' is no longer supported. Use O2 in conjunction
+#    with the minsize attribute instead."
+# Override opt-level for the eBPF crate only; main crate stays size-optimized.
+# (lto/strip are not allowed inside `package.` profile; rely on workspace lto=false
+# for ebpf by leaving them off here. workspace strip=true still applies; OK for bpf.)
+[profile.release.package."yumi-ebpf"]
+opt-level = 2
+codegen-units = 256
+
+# touch_probe 是单次调试二进制 (EVIOCGNAME ioctl 测试).
+# build-std + std 双 core 导致 duplicate lang item 'sized'.
+# 默认不编译; 需要时显式 --features probe-bin.
+[features]
+default = []
+probe-bin = []
+
+[[bin]]
+name = "yumi"
+path = "src/main.rs"
+
+[[bin]]
+name = "touch_probe"
+path = "src/bin/touch_probe.rs"
+required-features = ["probe-bin"]

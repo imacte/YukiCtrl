@@ -26,7 +26,7 @@ pub struct Meta {
     pub language: String,
 }
 
-fn default_loglevel() -> String { "INFO".to_string() }
+fn default_loglevel() -> String { "DEBUG".to_string() }
 fn default_language() -> String { "en".to_string() }
 
 // ════════════════════════════════════════════════════════════════
@@ -176,6 +176,182 @@ impl CpuLoadGovernorConfig {
 pub struct Mode {
     #[serde(default, alias = "CpuLoadGovernor")]
     pub cpu_load_governor: CpuLoadGovernorConfig,
+
+    /// 需求: 目标负载 (WebUI 暴露, 按模式独立记忆).
+    /// None = 未配置 → 回落 `fas::controller::mode_target_pressure()` 硬编码默认
+    /// (powersave=40 / balance=60 / performance=75 / fast=85).
+    #[serde(default)]
+    pub target_load: Option<f32>,
+}
+
+// ════════════════════════════════════════════════════════════════
+//  全模块亮屏/息屏双套配置中心 (modules.*)
+//  结构统一: 每模块 { screen_on: {...}, screen_off: {...} },
+//  daemon 在屏幕状态切换与 config 热重载时统一应用 (modules_ctrl.rs).
+// ════════════════════════════════════════════════════════════════
+
+/// 亮/息屏双套容器
+#[derive(Debug, Deserialize, Clone, Copy)]
+pub struct ScreenScoped<T> {
+    #[serde(default)]
+    pub screen_on: T,
+    #[serde(default)]
+    pub screen_off: T,
+}
+
+impl<T: Default> Default for ScreenScoped<T> {
+    fn default() -> Self {
+        Self { screen_on: T::default(), screen_off: T::default() }
+    }
+}
+
+impl<T> ScreenScoped<T> {
+    pub fn pick(&self, screen_on: bool) -> &T {
+        if screen_on { &self.screen_on } else { &self.screen_off }
+    }
+}
+
+/// 显卡: 频率护栏 + 负载加速线 (Adreno kgsl, pct 相对硬件最高频)
+#[derive(Debug, Deserialize, Clone, Copy)]
+pub struct GpuModuleCfg {
+    /// 最低频率 % (0..=100)
+    #[serde(default = "d_gpu_min")] pub min_pct: f32,
+    /// 最高频率 % (10..=100)
+    #[serde(default = "d_gpu_max")] pub max_pct: f32,
+    /// 负载超过此值(%)时临时拉满最高频 (0 = 关闭加速)
+    #[serde(default = "d_gpu_boost")] pub boost_util_pct: f32,
+}
+fn d_gpu_min() -> f32 { 0.0 }
+fn d_gpu_max() -> f32 { 100.0 }
+fn d_gpu_boost() -> f32 { 0.0 }
+impl Default for GpuModuleCfg {
+    fn default() -> Self {
+        Self { min_pct: d_gpu_min(), max_pct: d_gpu_max(), boost_util_pct: d_gpu_boost() }
+    }
+}
+
+/// 触摸加速: 开关 / 额外唤醒核数 / 保护时长
+#[derive(Debug, Deserialize, Clone, Copy)]
+pub struct TouchModuleCfg {
+    #[serde(default = "d_touch_en")] pub enabled: bool,
+    /// 触摸时除白名单核外额外唤醒的核数 (0 = 仅白名单; 8 = 全部, 即历史行为)
+    #[serde(default = "d_touch_cores")] pub extra_cores: u32,
+    /// 触摸保护窗 (ms), 期间禁止关核
+    #[serde(default = "d_touch_ms")] pub duration_ms: i64,
+}
+fn d_touch_en() -> bool { true }
+fn d_touch_cores() -> u32 { 8 }
+fn d_touch_ms() -> i64 { 200 }
+impl Default for TouchModuleCfg {
+    fn default() -> Self {
+        Self { enabled: d_touch_en(), extra_cores: d_touch_cores(), duration_ms: d_touch_ms() }
+    }
+}
+
+/// 内存交换: swappiness + 压力预警线
+#[derive(Debug, Deserialize, Clone, Copy)]
+pub struct SwapModuleCfg {
+    /// vm.swappiness (0..=200)
+    #[serde(default = "d_swap_sw")] pub swappiness: u32,
+    /// 内存压力预警线 (%) — 超限记日志 (监控语义, 不改变行为)
+    #[serde(default = "d_swap_p")] pub pressure_pct: f32,
+}
+fn d_swap_sw() -> u32 { 100 }
+fn d_swap_p() -> f32 { 20.0 }
+impl Default for SwapModuleCfg {
+    fn default() -> Self {
+        Self { swappiness: d_swap_sw(), pressure_pct: d_swap_p() }
+    }
+}
+
+/// 读写: 调度器 + 预读 (息屏套可独立收小; 空 scheduler = 不改)
+#[derive(Debug, Deserialize, Clone)]
+pub struct IoModuleCfg {
+    #[serde(default)] pub scheduler: String,
+    #[serde(default = "d_io_ra")] pub read_ahead_kb: String,
+}
+fn d_io_ra() -> String { "128".to_string() }
+impl Default for IoModuleCfg {
+    fn default() -> Self {
+        Self { scheduler: String::new(), read_ahead_kb: d_io_ra() }
+    }
+}
+
+/// 帧平滑: 掉帧判定与提频 (FAS 消费; 息屏 FAS 挂起, off 套为休眠结构)
+#[derive(Debug, Deserialize, Clone, Copy)]
+pub struct FrameModuleCfg {
+    /// 帧时间超出预算多少 ms 判掉帧
+    #[serde(default = "d_frame_jank")] pub jank_margin_ms: f32,
+    /// 掉帧提频总开关
+    #[serde(default = "d_frame_boost_en")] pub boost_enabled: bool,
+    /// 提频强度 (0..=2, 1 = 标准)
+    #[serde(default = "d_frame_boost")] pub boost_strength: f32,
+}
+fn d_frame_jank() -> f32 { 4.0 }
+fn d_frame_boost_en() -> bool { true }
+fn d_frame_boost() -> f32 { 1.0 }
+impl Default for FrameModuleCfg {
+    fn default() -> Self {
+        Self {
+            jank_margin_ms: d_frame_jank(),
+            boost_enabled: d_frame_boost_en(),
+            boost_strength: d_frame_boost(),
+        }
+    }
+}
+
+/// 全模块双套配置
+#[derive(Debug, Deserialize, Default, Clone)]
+pub struct ModulesConfig {
+    #[serde(default)] pub gpu: ScreenScoped<GpuModuleCfg>,
+    #[serde(default)] pub touch: ScreenScoped<TouchModuleCfg>,
+    #[serde(default)] pub swap: ScreenScoped<SwapModuleCfg>,
+    #[serde(default)] pub io: ScreenScoped<IoModuleCfg>,
+    #[serde(default)] pub frame: ScreenScoped<FrameModuleCfg>,
+}
+
+/// 需求: CPU 频率护栏 (亮屏/息屏两套, 相对 policy 最高频的百分比).
+///
+/// CLG 决策出的 perf 会被 clamp 到 [min_pct, max_pct]/100 后再选频:
+/// - 最低频率: 防止低负载时掉到极低频导致卡顿 (下限托底)
+/// - 最高频率: 省电限频 (上限封顶, 如息屏 60% = 大核最高只到 60% 档位)
+///
+/// 默认 0/100 = 不限制, 与历史行为完全一致.
+#[derive(Debug, Deserialize, Clone, Copy)]
+pub struct FreqLimits {
+    #[serde(default = "d_fl_off")] pub screen_on_min_pct: f32,
+    #[serde(default = "d_fl_on")]  pub screen_on_max_pct: f32,
+    #[serde(default = "d_fl_off")] pub screen_off_min_pct: f32,
+    #[serde(default = "d_fl_on")]  pub screen_off_max_pct: f32,
+}
+
+fn d_fl_off() -> f32 { 0.0 }
+fn d_fl_on() -> f32 { 100.0 }
+
+impl Default for FreqLimits {
+    fn default() -> Self {
+        Self {
+            screen_on_min_pct: d_fl_off(),
+            screen_on_max_pct: d_fl_on(),
+            screen_off_min_pct: d_fl_off(),
+            screen_off_max_pct: d_fl_on(),
+        }
+    }
+}
+
+impl FreqLimits {
+    /// 取当前屏幕状态生效的 (floor, ceil) 百分比 (已 clamp 且 floor<=ceil)
+    pub fn limits_for(&self, screen_on: bool) -> (f32, f32) {
+        let (mut lo, mut hi) = if screen_on {
+            (self.screen_on_min_pct, self.screen_on_max_pct)
+        } else {
+            (self.screen_off_min_pct, self.screen_off_max_pct)
+        };
+        lo = lo.clamp(0.0, 100.0);
+        hi = hi.clamp(0.0, 100.0);
+        if lo > hi { lo = hi; }
+        (lo / 100.0, hi / 100.0)
+    }
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -223,12 +399,34 @@ pub struct Config {
     pub io_settings: IOSettings,
     #[serde(default, rename = "CpuIdle")]
     pub cpu_idle: CpuIdle,
-    
+    /// 需求: CPU 频率护栏 (亮屏/息屏两套); 缺失 = 全开不限制
+    #[serde(default)]
+    pub freq_limits: FreqLimits,
+    /// 需求: 全模块亮/息屏双套配置 (gpu/touch/swap/io/frame)
+    #[serde(default)]
+    pub modules: ModulesConfig,
+
     // 按场景划分的性能模式
     #[serde(default)] pub powersave: Mode,
     #[serde(default)] pub balance: Mode,
     #[serde(default)] pub performance: Mode,
     #[serde(default)] pub fast: Mode,
+
+    /// Phase 2 / ticket-07: 按前台包名施加调度偏置 (Restrict / Boost).
+    /// YAML 示例:
+    /// ```yaml
+    /// app_rules:
+    ///   - package: com.tencent.tmgp.pubgmhd
+    ///     rule_type: boost
+    ///     strength: heavy
+    ///   - package: com.android.settings
+    ///     rule_type: restrict
+    ///     strength: light
+    ///     disable_burst: true
+    /// ```
+    /// 默认空列表 — 不配置即不施加偏置 (向后兼容).
+    #[serde(default)]
+    pub app_rules: Vec<crate::scheduler::app_rule::AppRule>,
 }
 
 impl Config {
@@ -246,5 +444,14 @@ impl Config {
             "fast" => Some(&self.fast),
             _ => None,
         }
+    }
+
+    /// 需求: 当前模式的目标负载 — 配置值优先, 未配置回落硬编码默认
+    /// (powersave=40 / balance=60 / performance=75 / fast=85).
+    pub fn target_load_of(&self, mode_name: &str) -> f32 {
+        self.get_mode(mode_name)
+            .and_then(|m| m.target_load)
+            .map(|v| v.clamp(5.0, 95.0))
+            .unwrap_or_else(|| crate::scheduler::fas::controller::mode_target_pressure(mode_name))
     }
 }

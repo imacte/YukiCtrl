@@ -25,6 +25,14 @@ pub mod config;
 pub mod scheduler;
 pub mod fas;
 pub mod cpu_load_governor;
+pub mod hotplug;
+// Phase 2 / ticket-07: App 规则引擎 (按前台包名施加调度偏置)
+pub mod app_rule;
+// 全模块亮/息屏双套配置的应用层 (modules.*)
+pub mod modules_ctrl;
+// 任务 #5 / ticket-09: sense snapshot 写盘器 (供 WebUI 轮询)
+// 注意: sensor 是顶层模块 (src/sensor/), 这里 use 而非 pub mod.
+use crate::sensor::start_sense_snapshot_thread;
 
 use crate::i18n::{t, load_language, t_with_args};
 use crate::fluent_args; 
@@ -110,14 +118,27 @@ pub fn start_scheduler_thread(rx: mpsc::Receiver<DaemonEvent>) -> Result<()> {
     let config = Config::from_file(config_path.to_str().unwrap()).unwrap_or_default();
 
     let shared_config = Arc::new(RwLock::new(config));
-    let shared_mode_name = Arc::new(Mutex::new("balance".to_string())); 
+    let shared_mode_name = Arc::new(Mutex::new("balance".to_string()));
     let sys_path_exist = Arc::new(utils::SysPathExist::new());
+    // 屏幕状态共享 (gpu_boost 线程 / config watcher / modules 应用层共用);
+    // 初始按亮屏处理 (保守方向, 与 scheduler_ipc 的 is_screen_on 初值一致).
+    let screen_shared: Arc<RwLock<bool>> = Arc::new(RwLock::new(true));
+
+    // 全模块双套配置: 启动时应用亮屏套 (含触摸配置推送全局快照)
+    {
+        let cfg_lock = shared_config.read().unwrap();
+        modules_ctrl::apply_screen_scoped(&cfg_lock.modules, true);
+        modules_ctrl::update_touch_global(&cfg_lock, true);
+    }
+    // GPU 加速线程 (boost_util_pct 驱动; 关闭时静默空转)
+    modules_ctrl::spawn_gpu_boost_thread(shared_config.clone(), screen_shared.clone());
 
     // ==========================================
     // Config Watcher 线程
     // ==========================================
     let config_clone = shared_config.clone();
     let sys_path_clone = sys_path_exist.clone();
+    let screen_for_watcher = screen_shared.clone();
     
     thread::Builder::new()
         .name("config_watcher".to_string())
@@ -137,11 +158,19 @@ pub fn start_scheduler_thread(rx: mpsc::Receiver<DaemonEvent>) -> Result<()> {
                     Ok(new_config) => {
                         logger::update_level(&new_config.meta.loglevel);
                         *config_clone.write().unwrap() = new_config;
-                        
+
                         let new_lang = config_clone.read().unwrap().meta.language.clone();
                         if old_lang != new_lang { load_language(&new_lang); }
 
                         log::info!("{}", t("config-reloaded-success"));
+
+                        // 全模块双套配置热重载: 按当前屏幕状态重新应用
+                        {
+                            let screen_on = *screen_for_watcher.read().unwrap();
+                            let cfg_lock = config_clone.read().unwrap();
+                            modules_ctrl::apply_screen_scoped(&cfg_lock.modules, screen_on);
+                            modules_ctrl::update_touch_global(&cfg_lock, screen_on);
+                        }
 
                         let scheduler = CpuScheduler::new(config_clone.clone(), sys_path_clone.clone());
                         if let Err(e) = scheduler.apply_system_tweaks() {
@@ -155,11 +184,40 @@ pub fn start_scheduler_thread(rx: mpsc::Receiver<DaemonEvent>) -> Result<()> {
     
     log::info!("{}", t("main-config-watch-thread-create"));
 
+    // ============================================================
+    // Hotplug 主循环 (200ms tick, 独立线程)
+    // ============================================================
+    if let Err(e) = hotplug::init_state_file() {
+        log::warn!("hotplug init_state_file failed: {}", e);
+    }
+    // Phase 2 / ticket-07: 把当前 config.app_rules 注入 hotplug 全局引擎,
+    // 这样 hotplug 200ms tick 才能根据前台包名调整 off/on 阈值 (漏洞 3).
+    // 注意: OnceLock 不可覆盖, 后续若 config 重载需要新的注入机制 (本任务范围外).
+    {
+        let cfg_lock = shared_config.read().unwrap();
+        hotplug::set_global_app_rule_engine(
+            app_rule::AppRuleEngine::new(cfg_lock.app_rules.clone())
+        );
+    }
+    if let Err(e) = hotplug::start_hotplug_thread() {
+        log::error!("hotplug thread start failed: {}", e);
+    } else {
+        log::info!("hotplug thread started");
+    }
+
+    // 任务 #5 / ticket-09: sense snapshot 写盘线程 (供 WebUI SensePanel 轮询)
+    if let Err(e) = start_sense_snapshot_thread() {
+        log::error!("sense snapshot thread start failed: {}", e);
+    } else {
+        log::info!("sense snapshot thread started");
+    }
+
     // ==========================================
     // IPC 监听主线程 (负责所有的状态机流转与调度干预)
     // ==========================================
     let config_clone = shared_config.clone();
     let mode_clone = shared_mode_name.clone();
+    let screen_for_ipc = screen_shared.clone();
 
     thread::Builder::new()
         .name("scheduler_ipc".to_string())
@@ -205,16 +263,69 @@ pub fn start_scheduler_thread(rx: mpsc::Receiver<DaemonEvent>) -> Result<()> {
                         log::info!("{}", t_with_args("scheduler-clg-init", &fluent_args!("mode" => current_mode.clone())));
                     }
                 }
+                // 需求: 启动默认亮屏 — 应用亮屏套帧参数
+                let config_lock = config_clone.read().unwrap();
+                let f = config_lock.modules.frame.pick(true);
+                fas_controller.set_frame_params(f.jank_margin_ms, f.boost_enabled, f.boost_strength);
             }
+
+            // Phase 2 / ticket-07-fix: 共享的 "应用 App 规则偏置" 流程.
+            // 入口: (a) ModeChange 事件处理 (mode 变了, 顺便刷偏置);
+            //       (b) AppRuleRefresh 事件处理 (mode 没变, 只刷偏置).
+            // 注: hotplug 的偏置由 hotplug 自己的 run_one_tick 每次读前台包名算,
+            //     此函数只负责 FAS 侧 (target_pressure). 这样 hotplug 与 FAS 解耦.
+            let apply_app_rule_bias = |fas_ctl: &mut fas::controller::FasController,
+                                       cfg: &Arc<RwLock<Config>>,
+                                       current_mode: &str,
+                                       package_name: &str,
+                                       base_target: f32| {
+                let bias_offset = {
+                    let cfg_lock = cfg.read().unwrap();
+                    app_rule::AppRuleEngine::new(cfg_lock.app_rules.clone())
+                        .match_rule(package_name)
+                        .map(|r| app_rule::AppRuleBias::from_rule(Some(r)))
+                        .map(|b| b.target_util_offset)
+                        .unwrap_or(0)
+                };
+                fas_ctl.set_target_pressure_with_app_bias(base_target, bias_offset);
+                if bias_offset != 0 {
+                    log::info!(
+                        "[app_rule] mode={} pkg={} target={:.1} bias={:+}",
+                        current_mode, package_name, base_target, bias_offset
+                    );
+                }
+            };
             
             // 事件循环包在 catch_unwind 中：任何 panic 都被捕获并记录，
             // 避免调度线程静默死亡（进程存活但频率停在最后状态）
             let loop_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            // 任务 #6 reliability: scheduler 主循环心跳. 每次成功处理一个事件
+            // 都 tick 一次. 如果 app_detect 线程卡住但 scheduler 仍在处理事件
+            // (例如收到 DaemonEvent), watchdog 仍然能收到心跳, 不会误杀.
             for msg in rx {
+                crate::watchdog::heartbeat_tick();
                 match msg {
                     // --- 1. 屏幕状态事件 (息屏深度睡眠) ---
                     DaemonEvent::ScreenStateChange(screen_on) => {
                         is_screen_on = screen_on;
+
+                        // 全模块亮/息屏双套配置: 切换到对应套 (gpu/swap/io 写 sysfs;
+                        // frame 由 FAS set_frame_params 消费; touch 推送全局快照)
+                        //
+                        // 锁序约束 (防死锁): 全进程统一 "先 config 后 screen".
+                        // 此处必须先做 config 读锁内的 apply, 再更新 screen 写锁 —
+                        // 若反过来 (screen 写锁内等 config 读锁), 会与 config watcher
+                        // (config 写锁 → screen 读锁) 形成环, 真机观测整进程僵死.
+                        {
+                            let cfg_lock = config_clone.read().unwrap();
+                            modules_ctrl::apply_screen_scoped(&cfg_lock.modules, screen_on);
+                            modules_ctrl::update_touch_global(&cfg_lock, screen_on);
+                            let f = cfg_lock.modules.frame.pick(screen_on);
+                            fas_controller.set_frame_params(
+                                f.jank_margin_ms, f.boost_enabled, f.boost_strength);
+                        }
+                        *screen_for_ipc.write().unwrap() = screen_on;
+
                         let current_mode = mode_clone.lock().unwrap().clone();
 
                         if !is_screen_on {
@@ -268,11 +379,32 @@ pub fn start_scheduler_thread(rx: mpsc::Receiver<DaemonEvent>) -> Result<()> {
                             log::info!("{}", t_with_args("scheduler-mode-change-request", &fluent_args!(
                                 "old" => old_mode.clone(), "new" => mode.as_str(), "pkg" => package_name.as_str(), "temp" => temperature
                             )));
-                            
+
                             *current_mode_lock = mode.clone();
-                            drop(current_mode_lock); 
+                            drop(current_mode_lock);
 
                             let _ = utils::try_write_file(&mode_file_path, mode.as_bytes());
+
+                            // Phase 2 / ticket-06: 模式切换 → 更新 fas_controller target_pressure.
+                            // 幂等, FAS 接管前先用 mode 的默认值, 避免 reset_runtime 后跑空.
+                            //
+                            // Phase 2 / ticket-07: 若触发 ModeChange 的就是当前前台包,
+                            // 叠加 App 规则偏置 (Restrict → 降低 target, Boost → 提高).
+                            // ModeChange 事件的 package_name 就是触发源, 直接拿来匹配.
+                            //
+                            // 需求: 目标负载配置化 — config {mode}.target_load 优先,
+                            // 未配置回落 mode_target_pressure() 硬编码默认.
+                            let target = {
+                                let cfg_lock = config_clone.read().unwrap();
+                                cfg_lock.target_load_of(&mode)
+                            };
+                            apply_app_rule_bias(
+                                &mut fas_controller,
+                                &config_clone,
+                                &mode,
+                                &package_name,
+                                target,
+                            );
 
                             if mode == "fas" {
                                 // 进游戏：释放 CLG 控制权，激活 FAS
@@ -294,6 +426,12 @@ pub fn start_scheduler_thread(rx: mpsc::Receiver<DaemonEvent>) -> Result<()> {
                                 fas_controller.set_game(pid, &package_name);
                                 fas_controller.set_temperature(temperature);
                                 fas_controller.set_temp_threshold(current_rules.fas_rules.core_temp_threshold);
+                                // 需求: 进游戏接管时应用当前屏幕状态的帧参数套
+                                if is_screen_on {
+                                    let config_lock = config_clone.read().unwrap();
+                                    let f = config_lock.modules.frame.pick(true);
+                                    fas_controller.set_frame_params(f.jank_margin_ms, f.boost_enabled, f.boost_strength);
+                                }
                             } else {
                                 // 退游戏：尝试挂起 FAS，并激活普通模式
                                 if fas_suspended_at.is_some() {
@@ -332,6 +470,33 @@ pub fn start_scheduler_thread(rx: mpsc::Receiver<DaemonEvent>) -> Result<()> {
                         }
                     },
 
+                    // --- 2.5 Phase 2 / ticket-07-fix: 前台包名变化 (与 ModeChange 解耦) ---
+                    // 触发场景: 用户切换前台应用, 但 app_detect 判定模式没变 (例如两个
+                    // 应用都映射到 balance 模式). ModeChange 不会发, 但 AppRule 偏置需要更新.
+                    DaemonEvent::AppRuleRefresh { package_name } => {
+                        if !is_screen_on { continue; } // 息屏期间不施加 App 规则
+                        let current_mode = mode_clone.lock().unwrap().clone();
+                        // 只对 FAS 模式应用 (非 FAS 模式靠 mode 自带的 target, App 规则
+                        // 只在 FAS 调度下有意义; 非 FAS 用 CLG 完全不同的决策路径).
+                        if current_mode == "fas" {
+                            // 需求: 目标负载配置化 (同 ModeChange 分支)
+                            let target = {
+                                let cfg_lock = config_clone.read().unwrap();
+                                cfg_lock.target_load_of(&current_mode)
+                            };
+                            apply_app_rule_bias(
+                                &mut fas_controller,
+                                &config_clone,
+                                &current_mode,
+                                &package_name,
+                                target,
+                            );
+                        }
+                        // 注: hotplug 不在此处触发 — hotplug::run_one_tick 每个 tick 自动
+                        // 读前台包名重算偏置, 频率足够高, 不需要事件驱动. 事件驱动 FAS 是
+                        // 因为 FAS 调频成本高, 必须精确触发才划算.
+                    },
+
                     // --- 3. CPU 负载事件 (eBPF 驱动) ---
                     DaemonEvent::SystemLoadUpdate { core_utils, foreground_max_util } => {
                         let current_mode = mode_clone.lock().unwrap().clone();
@@ -339,9 +504,21 @@ pub fn start_scheduler_thread(rx: mpsc::Receiver<DaemonEvent>) -> Result<()> {
                         if is_screen_on && current_mode == "fas" && fas_suspended_at.is_none() {
                             fas_controller.update_cpu_util(foreground_max_util);
                             fas_controller.update_core_utils(&core_utils);
+                            // Phase 2 / ticket-06: 顺手喂一次综合压力指数 (frame_drop_active=false,
+                            // 因为这是 CPU 负载事件, 不知道 frame 状态; 真正的 frame_drop 由
+                            // frame_pipeline 单独发事件喂入).
+                            fas_controller.tick_pressure_index(false);
                         }
                         // 如果 CLG 处于活动状态（包含日常模式或息屏 Doze 模式），全权投喂
                         if cpu_governor.is_active() {
+                            // 需求: 频率护栏 — 每 tick 按当前屏幕状态从 config.freq_limits
+                            // 取值注入 (幂等). 放在这里而非 4 个激活点, config 热重载与
+                            // 屏幕切换都自动覆盖, 无需额外事件.
+                            let (fl_lo, fl_hi) = {
+                                let cfg_lock = config_clone.read().unwrap();
+                                cfg_lock.freq_limits.limits_for(is_screen_on)
+                            };
+                            cpu_governor.set_freq_limits(fl_lo, fl_hi);
                             cpu_governor.on_load_update(&core_utils);
                         }
                     },

@@ -10,7 +10,7 @@ declare global {
   }
 }
 
-const MODULE_BASE_PATH = "/data/adb/modules/yumi"; 
+const MODULE_BASE_PATH = "/data/adb/modules/core-pilot"; 
 const PATHS = {
   RULES_YAML: `${MODULE_BASE_PATH}/rules.yaml`,          
   CONFIG_YAML: `${MODULE_BASE_PATH}/config/config.yaml`, 
@@ -20,11 +20,27 @@ const PATHS = {
 
 const isDev = import.meta.env.DEV || typeof window.ksu === 'undefined';
 
+/** UTF-8 安全的 base64 (writeFile 专用; btoa 原生不支持中文) */
+function toBase64Utf8(s: string): string {
+  const bytes = new TextEncoder().encode(s);
+  let bin = '';
+  const CHUNK = 0x8000; // 分块避免 String.fromCharCode 参数上限
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(bin);
+}
+
 const RealBridge = {
   async isDaemonRunning(): Promise<boolean> {
+    // 修复: 进程名是 yumi (模块目录叫 core-pilot, 但二进制/进程名一直是 yumi).
+    // 旧代码 pidof core-pilot 永远失败 → 首页恒显示"守护进程未响应"误报.
+    // 兼容两种名字, 任一命中即视为运行.
     try {
       const { errno, stdout } = await exec(`pidof yumi`);
-      return errno === 0 && stdout.trim().length > 0;
+      if (errno === 0 && stdout.trim().length > 0) return true;
+      const r2 = await exec(`pidof core-pilot`);
+      return r2.errno === 0 && r2.stdout.trim().length > 0;
     } catch (e) {
       return false;
     }
@@ -36,8 +52,12 @@ const RealBridge = {
     return stdout;
   },
   async writeFile(path: string, content: string): Promise<void> {
-    const escapedContent = content.replace(/"/g, '\\"');
-    const { errno } = await exec(`echo "${escapedContent}" > "${path}"`);
+    // 旧实现 echo "..." 双引号转义: 内容含反引号 / $ / 反斜杠时会被 shell 展开,
+    // 导致写坏 yaml (保存后 daemon 解析失败 = "保存无效"). 改为 base64 通道:
+    //   echo <b64> | base64 -d > file
+    // base64 字母表无 shell 元字符, UTF-8 中文安全, 任何内容原样落盘.
+    const b64 = toBase64Utf8(content);
+    const { errno } = await exec(`echo ${b64} | base64 -d > "${path}"`);
     if (errno !== 0) throw new Error(i18n.global.t('write_failed', { path }) as string);
   },
 

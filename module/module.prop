@@ -1,7 +1,7 @@
-id=yumi
-name=yumi
-version=v2.0.2
-versionCode=20002
+id=core-pilot
+name=核心领航员
+version=v2.1.0
+versionCode=20100
 author=yuki
-description= yumi
+description= 八路感知智能调度副驾驶——自动寻优、突发突破、动态关核、App规则偏置
 updateJson=https://raw.githubusercontent.com/imacte/yumi/main/updateInformation/update.json

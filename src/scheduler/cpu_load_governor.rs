@@ -112,6 +112,11 @@ pub struct CpuLoadGovernor {
     cfg: CpuLoadGovernorConfig,
     active: bool,
     log_counter: u32,
+    /// 需求: 频率护栏 (0.0..=1.0, 相对 policy 最高频). 默认 0/1 不限制.
+    /// 由 scheduler 主循环按屏幕状态 (config.freq_limits) 每 tick 注入;
+    /// 与 cfg 的 perf_floor/perf_ceil 叠加 (取更严者).
+    freq_floor: f32,
+    freq_ceil: f32,
 }
 
 impl CpuLoadGovernor {
@@ -122,11 +127,26 @@ impl CpuLoadGovernor {
             cfg: CpuLoadGovernorConfig::default(),
             active: false,
             log_counter: 0,
+            freq_floor: 0.0,
+            freq_ceil: 1.0,
         }
     }
 
     pub fn is_active(&self) -> bool {
         self.active
+    }
+
+    /// 需求: 设置频率护栏 (入参为 0.0..=1.0 比例). 幂等, 值未变化时不动作.
+    /// reload_config / init_policies 不会重置它 — 护栏生命周期跟随屏幕状态,
+    /// 与模式配置 (per-mode) 正交.
+    pub fn set_freq_limits(&mut self, floor: f32, ceil: f32) {
+        let lo = floor.clamp(0.0, 1.0);
+        let hi = if ceil < lo { lo } else { ceil.clamp(0.0, 1.0) };
+        if (lo - self.freq_floor).abs() > f32::EPSILON || (hi - self.freq_ceil).abs() > f32::EPSILON {
+            debug!("[clg] freq limits -> [{:.0}%, {:.0}%]", lo * 100.0, hi * 100.0);
+            self.freq_floor = lo;
+            self.freq_ceil = hi;
+        }
     }
 
     pub fn init_policies(&mut self, gov_cfg: &CpuLoadGovernorConfig) {
@@ -335,6 +355,11 @@ impl CpuLoadGovernor {
         if !self.active { return; }
 
         for cluster in &mut self.clusters {
+            // 全离线 policy 跳过: 离线核的 cpufreq 节点写入恒 EBUSY,
+            // 且无调度事件 → util 数据无效. 位图来自 hotplug 对账循环.
+            let any_online = cluster.affected_cpus.iter().any(|&c| crate::utils::is_cpu_online(c));
+            if !any_online { continue; }
+
             let raw_util = cluster.max_util(core_utils);
             // 尖峰抑制：单 tick 跳升超过阈值时衰减其增量，
             // 孤立瞬时尖峰（如单核 0↔100%）不瞬间拉满 perf；
@@ -358,7 +383,10 @@ impl CpuLoadGovernor {
             };
 
             let target_perf = (util * headroom)
-                .clamp(self.cfg.perf_floor, self.cfg.perf_ceil);
+                .clamp(self.cfg.perf_floor, self.cfg.perf_ceil)
+                // 需求: 频率护栏 (亮屏/息屏两套) 与 perf_floor/ceil 叠加, 取更严者
+                .max(self.freq_floor)
+                .min(self.freq_ceil);
             let old_perf = cluster.current_perf;
 
             if target_perf > old_perf {
@@ -408,7 +436,10 @@ impl CpuLoadGovernor {
                 }
             }
 
-            cluster.current_perf = cluster.current_perf.clamp(self.cfg.perf_floor, self.cfg.perf_ceil);
+            cluster.current_perf = cluster.current_perf
+                .clamp(self.cfg.perf_floor, self.cfg.perf_ceil)
+                .max(self.freq_floor)
+                .min(self.freq_ceil);
             let target_freq = cluster.find_nearest_freq(cluster.current_perf);
             cluster.write_freq(target_freq);
         }

@@ -19,7 +19,7 @@ use crate::fas_types::{FasRulesConfig, ClusterProfile};
 use crate::utils::FastWriter;
 use std::fs;
 use std::time::Instant;
-use log::{info, warn};
+use log::{debug, info, warn};
 
 use crate::i18n::{t, t_with_args};
 use crate::fluent_args;
@@ -31,6 +31,11 @@ use super::FasController;
 impl FasController {
     /// 热重载规则
     pub fn reload_rules(&mut self, new_rules: &FasRulesConfig) {
+        debug!(
+            "[fas-rules] reload_rules pid=kp={:.4} ki={:.4} kd={:.4} fps_margin={:.2} per_app_profiles={}",
+            new_rules.pid.kp, new_rules.pid.ki, new_rules.pid.kd,
+            new_rules.fps_margin, new_rules.per_app_profiles.len(),
+        );
         // 规范化配置（防 NaN/越界导致 clamp panic），遮蔽原引用使后续代码一致
         let mut rules = new_rules.clone();
         rules.normalize();
@@ -210,6 +215,11 @@ impl FasController {
     // ════════════════════════════════════════════════════════════
 
     pub fn load_policies(&mut self, fas_rules: &FasRulesConfig) {
+        debug!(
+            "[fas-rules] load_policies pid=kp={:.4} ki={:.4} kd={:.4} auto_capacity={} fps_margin={:.2} fps_gears={:?}",
+            fas_rules.pid.kp, fas_rules.pid.ki, fas_rules.pid.kd,
+            fas_rules.auto_capacity_weight, fas_rules.fps_margin, fas_rules.fps_gears,
+        );
         // 规范化配置（防 NaN/越界导致 clamp panic），遮蔽原引用使后续代码一致
         let mut rules = fas_rules.clone();
         rules.normalize();

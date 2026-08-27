@@ -65,12 +65,30 @@ impl PidController {
         self.integral = self.integral.clamp(-self.integral_limit, self.integral_limit);
     }
 
-    /// 带利用率感知的 PID 计算
+    /// 带综合压力指数感知的 PID 计算 (Phase 2 / ticket-06)
     ///
-    /// 当前台线程 CPU 利用率很低时，说明瓶颈不在 CPU（可能是 GPU bound
-    /// 或 IO bound），此时 PID 拉频不会改善帧率，反而白给功耗。
-    /// 通过 util_gain 衰减 P 项增益，避免无效拉频。
-    pub(super) fn compute(&mut self, error: f32, inst_error: f32, norm: f32, fg_util: f32) -> f32 {
+    /// 主输入 `pressure_norm` ∈ [0.0, 1.0], 来自八路感知合成的综合压力指数 / 100.
+    /// 当 `pressure_norm` 可用 (> 0.01, 表明八路感知已初始化) → PID 的 P 项增益
+    /// 由此驱动:
+    ///   - pressure_norm ∈ (0.01, 0.30) → 系统压力低 (GPU/IO/memory bound),
+    ///     衰减 P 项, 避免无效拉频
+    ///   - pressure_norm ∈ [0.30, 1.0] → 系统繁忙, 正常增益
+    ///
+    /// `fg_util` 仅作为 fallback: 当 `pressure_norm <= 0.01` (八路感知未启动
+    /// 或 compute_pressure_index 返回 0) → 自动退回原 fg_util < 0.30 衰减逻辑,
+    /// 保证早期启动期间 PID 仍能工作.
+    ///
+    /// 这个替换不会改变 PID 的 error / integral / derivative 计算, 只会修改
+    /// P 项的 util_gain 系数. 既保留了原 CPU bound 全力拉频语义, 又额外识别了
+    /// GPU bound / IO bound 等其他瓶颈场景.
+    pub(super) fn compute(
+        &mut self,
+        error: f32,
+        inst_error: f32,
+        norm: f32,
+        fg_util: f32,
+        pressure_norm: f32,
+    ) -> f32 {
         let safe_norm = norm.clamp(0.5, 2.5);
 
         if error < 0.0 {
@@ -83,20 +101,34 @@ impl PidController {
         self.integral = self.integral.clamp(-dyn_limit, dyn_limit);
 
         let raw_deriv = (error - self.prev_error) / safe_norm;
-        // 动态低通滤波：高刷下帧间微小抖动（调度噪声）在微秒级被放大，
-        // 固定 0.7/0.3 滤波器在 144fps 下无法有效抑制。
-        // alpha 随 target_fps 升高而降低：60fps=0.30, 120fps=0.21, 144fps=0.19
-        // 使 D 项在高刷下更加平滑，避免输出高频震荡。
+        // 动态低通滤波: 高刷下帧间微小抖动在微秒级被放大,
+        // alpha 随 target_fps 升高而降低: 60fps=0.30, 120fps=0.21, 144fps=0.19
         let d_alpha = (0.30 * (60.0 / self.adapted_fps.max(1.0)).sqrt()).clamp(0.10, 0.30);
         self.filtered_deriv = self.filtered_deriv * (1.0 - d_alpha) + raw_deriv * d_alpha;
         self.prev_error = error;
 
-        // 利用率感知增益调制
-        // fg_util < 0.30 → GPU/IO bound，PID 增频无效，衰减 P 项
-        // fg_util ∈ [0.30, 1.0] → CPU bound，正常增益
-        // fg_util 无数据 (≤ 0.01) → 刚启动还没采样到，不衰减
-        let util_gain = if fg_util > 0.01 && fg_util < 0.30 {
-            0.3 + fg_util * 2.3  // 0.3 ~ 0.99
+        // 增益调制 (Phase 2 / ticket-06 改造)
+        //
+        // 优先级: pressure_norm > fg_util (fallback)
+        //
+        // 情形 1: pressure_norm > 0.01 → 八路感知在线, 用综合压力指数判断
+        //   - pressure_norm ∈ (0.01, 0.30) → 系统压力低, 衰减 P 项
+        //     (例: GPU bound 但 CPU 闲, 拉 CPU 频率救不了帧率, 白给功耗)
+        //   - 否则 → 1.0 (全力拉频)
+        // 情形 2: pressure_norm <= 0.01 → 感知未启动, 退回原 fg_util 逻辑
+        //   - fg_util ∈ (0.01, 0.30) → CPU 闲, 衰减 P 项
+        //   - 否则 → 1.0
+        //
+        // 即使压力低 (gain < 1.0) PID 也保留最低 0.30 的 gain,
+        // 不会完全压死, 这样短促的 jank 仍能及时拉频.
+        let util_gain: f32 = if pressure_norm > 0.01 {
+            if pressure_norm < 0.30 {
+                0.3 + pressure_norm * 2.3  // 0.3 ~ 0.99
+            } else {
+                1.0
+            }
+        } else if fg_util > 0.01 && fg_util < 0.30 {
+            0.3 + fg_util * 2.3  // fallback: 与原行为一致
         } else {
             1.0
         };
@@ -134,4 +166,136 @@ pub(super) fn fps_norm(target_fps: f32) -> f32 {
 #[inline]
 pub(super) fn scale_frames(base: u32, target_fps: f32) -> u32 {
     ((base as f32 * target_fps / 60.0).max(base as f32 * 0.4)) as u32
+}
+
+// ════════════════════════════════════════════════════════════════
+//  Phase 2 / ticket-06 单元测试
+// ════════════════════════════════════════════════════════════════
+//
+// 验证 PID 的 P 项增益正确切到"综合压力指数"通道:
+// 1. GPU 负载高 (但 CPU util 低) → PID 应基于压力指数仍能拉高输出
+// 2. 所有感知可用时 → 压力指数直接决定 P 项 (不是 fg_util)
+// 3. 压力指数不可用 (≤ 0.01) → 自动回退到 fg_util (向后兼容)
+
+#[cfg(test)]
+mod pressure_aware_tests {
+    use super::*;
+
+    fn make_pid() -> PidController {
+        // kp 选个明显能体现差异的值
+        let mut p = PidController::new(0.5, 0.0, 0.0);
+        p.adapt_to_target_fps(60.0);
+        p
+    }
+
+    /// 场景 1: GPU bound (CPU util 低但压力高) 时 PID 输出应高于纯 CPU 模式.
+    ///
+    /// `error=-1.0` (帧晚 1ms), `inst_error=-1.0` (本帧也晚), norm=1.0.
+    /// CPU 闲 (fg_util=0.10) 但 GPU 压力大 (pressure_norm=0.85).
+    /// 旧逻辑: util_gain = 0.3 + 0.10*2.3 = 0.53 → P = 0.5 * (-1.0) * 0.53 = -0.265
+    /// 新逻辑: pressure_norm=0.85 > 0.30 → util_gain = 1.0 → P = -0.5
+    /// 差值 |0.235|, 新逻辑输出更"猛" (绝对值更大), 这正是 GPU bound 应有的行为:
+    /// 既然压力大, PID 应当积极响应, 不该被"CPU 闲"误导.
+    #[test]
+    fn pid_uses_pressure_when_cpu_idle_but_gpu_busy() {
+        let mut pid_a = make_pid();  // 旧逻辑: 仅 fg_util=0.10
+        let mut pid_b = make_pid();  // 新逻辑: pressure_norm=0.85
+
+        let err = -1.0_f32;
+        let inst = -1.0_f32;
+        let norm = 1.0_f32;
+        let fg_util = 0.10_f32;
+
+        let out_old = pid_a.compute(err, inst, norm, fg_util, 0.0);
+        let out_new = pid_b.compute(err, inst, norm, fg_util, 0.85);
+
+        assert!(out_new.abs() > out_old.abs(),
+            "压力指数驱动应比 fg_util 驱动更强: new={} old={}",
+            out_new, out_old);
+        // 新输出应该是 kp * inst * 1.0 = 0.5 * (-1.0) * 1.0 = -0.5
+        assert!((out_new - (-0.5)).abs() < 0.001, "got {out_new}");
+        // 旧输出应该是 kp * inst * 0.53 = -0.265
+        assert!((out_old - (-0.265)).abs() < 0.01, "got {out_old}");
+    }
+
+    /// 场景 2: 所有感知数据可用 → PID 输入等于综合压力指数 (而非 fg_util).
+    ///
+    /// 给一个"高 fg_util 但低压力指数"的场景, 验证 PID 用的是压力指数.
+    /// 例: CPU util=0.90 但 GPU 极闲 (gpu 0, io 0, mem 0, frame false) →
+    /// pressure_norm = 0.90 * (0.40 / 0.65) = 0.554 > 0.30 → 增益 1.0.
+    /// 压力指数确实"接管"了 fg_util 通道.
+    #[test]
+    fn pid_uses_pressure_norm_not_fg_util_when_both_available() {
+        let mut pid_a = make_pid();
+        let mut pid_b = make_pid();
+        let err = -1.0_f32;
+        let inst = -1.0_f32;
+        let norm = 1.0_f32;
+
+        // fg_util=0.10 旧逻辑会衰减 (gain=0.53), 但 pressure_norm=0.85 不衰减
+        let out_low_pressure = pid_a.compute(err, inst, norm, 0.10, 0.85);
+        // 反向: fg_util=0.90 旧逻辑不衰减 (gain=1.0), 但 pressure_norm=0.10 衰减
+        let out_high_cpu_low_pressure = pid_b.compute(err, inst, norm, 0.90, 0.10);
+
+        // 两者应都约 -0.5 (gain=1.0), 即压力指数覆盖了 fg_util 的影响
+        assert!((out_low_pressure - (-0.5)).abs() < 0.001,
+            "压力指数 0.85 应覆盖低 fg_util: got {out_low_pressure}");
+        // 第二个: pressure_norm=0.10 → gain = 0.3 + 0.10*2.3 = 0.53 → P=-0.265
+        assert!((out_high_cpu_low_pressure - (-0.265)).abs() < 0.01,
+            "压力指数 0.10 应覆盖高 fg_util: got {out_high_cpu_low_pressure}");
+    }
+
+    /// 场景 3: 压力指数不可用 (≤ 0.01, 八路感知未启动) → 自动回退到 fg_util.
+    ///
+    /// 验证向后兼容: 旧调用方传 pressure_norm=0.0 时, 行为与原版完全一致.
+    #[test]
+    fn pid_falls_back_to_fg_util_when_pressure_unavailable() {
+        let mut pid_old_only = make_pid();
+        let mut pid_legacy = make_pid();
+        let err = -1.0_f32;
+        let inst = -1.0_f32;
+        let norm = 1.0_f32;
+        let fg_util = 0.10_f32;
+
+        // pressure_norm=0.0 → 应当走 fallback, 行为与旧 compute 一致
+        let out = pid_legacy.compute(err, inst, norm, fg_util, 0.0);
+        // 直接调用旧公式 (在测试里模拟)
+        let legacy_gain = if fg_util > 0.01 && fg_util < 0.30 {
+            0.3 + fg_util * 2.3
+        } else {
+            1.0
+        };
+        let legacy_out = 0.5 * inst * legacy_gain;
+        assert!((out - legacy_out).abs() < 0.001,
+            "fallback 应等同旧逻辑: got {out} legacy {legacy_out}");
+
+        // 与"无 fallback 路径"对比: pressure_norm=0.0 + fg_util=0.10 → gain=0.53
+        // 但 fg_util=0.90 (CPU 忙) → gain=1.0
+        let _ = pid_old_only.compute(err, inst, norm, 0.90, 0.0);
+        let out_cpu_busy = pid_old_only.compute(err, inst, norm, 0.90, 0.0);
+        assert!((out_cpu_busy - (-0.5)).abs() < 0.001,
+            "压力不可用 + CPU 忙 → gain 1.0: got {out_cpu_busy}");
+    }
+
+    /// 场景 4: 压力指数边界值 — 0.30 应当是 gain 从 0.99 跳到 1.0 的阈值.
+    #[test]
+    fn pid_pressure_threshold_at_0_30() {
+        let mut p_below = make_pid();
+        let mut p_at = make_pid();
+        let mut p_above = make_pid();
+        let err = -1.0_f32;
+        let inst = -1.0_f32;
+        let norm = 1.0_f32;
+
+        // 0.20 < 0.30 → gain ≈ 0.76
+        let out_below = p_below.compute(err, inst, norm, 0.5, 0.20);
+        // 0.30 → 不在 (< 0.30) 分支 → gain = 1.0
+        let out_at = p_at.compute(err, inst, norm, 0.5, 0.30);
+        // 0.50 → gain = 1.0
+        let out_above = p_above.compute(err, inst, norm, 0.5, 0.50);
+
+        assert!(out_at.abs() > out_below.abs(), "0.30 应比 0.20 更强");
+        assert!((out_at - out_above).abs() < 0.001, "0.30 与 0.50 应等价");
+        assert!((out_at - (-0.5)).abs() < 0.001, "got {out_at}");
+    }
 }

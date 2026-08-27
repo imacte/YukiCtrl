@@ -19,6 +19,10 @@ mod common;
 mod logger;
 mod monitor;
 mod scheduler;
+// 任务 #5 / ticket-09: 顶层 sensor 模块 (被 scheduler 调用, 也可能被 main 直接调用)
+mod sensor;
+// 任务 #6 reliability: watchdog 保护层
+mod watchdog;
 pub mod i18n;
 pub mod utils;
 pub mod fas_types;
@@ -50,10 +54,13 @@ fn main() -> Result<()> {
     // 4. 初始化日志
     logger::init(&config.meta.loglevel)?; 
     
-    info!("{}", t("yumi-module-starting"));
+    info!("{}", t("core-pilot-module-starting"));
 
     // 3. 创建通信通道
     let (tx, rx) = mpsc::channel::<common::DaemonEvent>();
+
+    // 3.5 任务 #6 reliability: 启动 watchdog 后台线程 (守护心跳 / 在线核心 / 温度)
+    watchdog::start_watchdog_thread();
 
     // 4. 启动 Scheduler
     if let Err(e) = scheduler::start_scheduler_thread(rx) {

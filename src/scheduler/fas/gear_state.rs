@@ -15,7 +15,7 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-use log::info;
+use log::{debug, info};
 
 use crate::i18n::t_with_args;
 use crate::fluent_args;
@@ -44,6 +44,10 @@ impl FasController {
 
     pub(super) fn do_gear_switch(&mut self, new_fps: f32, perf: f32, dampen: u32) {
         let old = self.current_target_fps;
+        debug!(
+            "[fas-gear] do_gear_switch old={:.0} -> new={:.0} perf={:.2} dampen={}",
+            old, new_fps, perf, dampen,
+        );
         self.current_target_fps = new_fps;
         self.refresh_cached_values();
         self.upgrade_confirm_frames = 0;
@@ -183,7 +187,9 @@ impl FasController {
                 } else if recent30 >= tfps - 5.0 {
                     self.cancel_boost();
                     self.downgrade_confirm_frames = 0;
-                } else if !self.downgrade_boost_active && self.downgrade_confirm_frames == 0 {
+                } else if !self.downgrade_boost_active && self.downgrade_confirm_frames == 0
+                    // 需求: 掉帧提频开关 (modules.frame.{on,off}.boost_enabled)
+                    && self.frame_boost_enabled {
                     let boost_inc = self.scaled_boost_inc();
                     self.downgrade_boost_active = true;
                     let scaled_duration = scale_frames(self.cfg.downgrade_boost_duration, self.current_target_fps);

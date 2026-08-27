@@ -20,7 +20,6 @@ use aya::maps::{PerCpuArray, HashMap as BpfHashMap};
 use aya::util::online_cpus;
 use std::sync::mpsc::Sender;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Arc;
 use crate::common::DaemonEvent;
 use crate::monitor::app_detect;
 use crate::utils::get_ktime_ns;
@@ -44,6 +43,89 @@ fn get_thread_tids(pid: u32) -> Vec<u32> {
     tids
 }
 
+// ============================================================
+//  CpuIdleSnapshot — per-CPU idle/util 只读快照 (Phase 1 / ticket-03 扩展)
+// ============================================================
+//
+// 用途: hotplug 模块读这个 snapshot 决定 enable/disable.
+// 设计: cpu_monitor 每 200ms tick 写一次, hotplug 自己 tick (也是 200ms)
+//      读一次. 两者解耦, 不需要 channel.
+//
+// 公开 API:
+//   - `idle_snapshot_handle()` → `Arc<Mutex<CpuIdleSnapshot>>` (一次 init, 多处共享)
+//   - `idle_snapshot_now()`    → `CpuIdleSnapshot` (克隆当前状态, hotplug 主循环用)
+//   - `idle_snapshot_push(cpu_id, idle_pct)` → 内部 tick 末尾调用
+//
+// 全局 handle 用 once_cell / lazy_static 风格 (Rust 1.80+ 已有 std::sync::OnceLock).
+
+use std::sync::{Arc, Mutex, OnceLock};
+
+/// 单个 CPU 的 idle/util 快照 (Phase 1 / ticket-03 RED test `percpu_state.rs` 用同款字段名)
+#[derive(Debug, Clone, Copy)]
+pub struct CpuIdleEntry {
+    pub cpu_id: u32,
+    /// 0..=100 (空闲百分比, 与 hotplug threshold.rs::CpuLoad.idle_pct 兼容)
+    pub idle_pct: f32,
+    /// 0..=100 (工作百分比, hotplug threshold.rs::CpuLoad.util_pct)
+    pub util_pct: f32,
+}
+
+/// 整个系统的 per-CPU idle/util 快照
+#[derive(Debug, Clone, Default)]
+pub struct CpuIdleSnapshot {
+    pub cpus: Vec<CpuIdleEntry>,
+    /// 快照时间戳 (ktime_ns); 0 表示从未更新过
+    pub updated_at_ns: u64,
+}
+
+impl CpuIdleSnapshot {
+    /// 取 cpu_id 对应的 entry, 不存在返回 None
+    pub fn get(&self, cpu_id: u32) -> Option<CpuIdleEntry> {
+        self.cpus.iter().find(|e| e.cpu_id == cpu_id).copied()
+    }
+
+    /// 是否为空 (从未更新过)
+    pub fn is_empty(&self) -> bool {
+        self.cpus.is_empty()
+    }
+}
+
+/// 全局 snapshot handle (lazy init, 单例)
+static IDLE_SNAPSHOT: OnceLock<Arc<Mutex<CpuIdleSnapshot>>> = OnceLock::new();
+
+/// 获取全局 snapshot handle (线程安全, 多次调用返回同一个 Arc)
+pub fn idle_snapshot_handle() -> Arc<Mutex<CpuIdleSnapshot>> {
+    IDLE_SNAPSHOT
+        .get_or_init(|| Arc::new(Mutex::new(CpuIdleSnapshot::default())))
+        .clone()
+}
+
+/// 读取当前 snapshot (克隆一份, 调用方可独立使用)
+pub fn idle_snapshot_now() -> CpuIdleSnapshot {
+    let h = idle_snapshot_handle();
+    h.lock().map(|g| g.clone()).unwrap_or_default()
+}
+
+/// cpu_monitor tick 内部调用: 写入本 tick 计算结果
+/// (旧字段: `util: f32` 0..=1.0, 我们转成 %)
+fn idle_snapshot_push(cpus: &[(u32, f32)]) {
+    let h = idle_snapshot_handle();
+    if let Ok(mut g) = h.lock() {
+        g.cpus.clear();
+        g.cpus.reserve(cpus.len());
+        for &(cpu_id, util_0_1) in cpus {
+            let util_pct = (util_0_1 * 100.0).clamp(0.0, 100.0);
+            let idle_pct = 100.0 - util_pct;
+            g.cpus.push(CpuIdleEntry {
+                cpu_id,
+                idle_pct,
+                util_pct,
+            });
+        }
+        g.updated_at_ns = crate::utils::get_ktime_ns();
+    }
+}
+
 pub async fn start_cpu_loop(tx: Sender<DaemonEvent>) -> Result<(), anyhow::Error> {
     let bpf = Box::leak(Box::new(Ebpf::load(include_bytes!(concat!(
         env!("OUT_DIR"),
@@ -54,11 +136,10 @@ pub async fn start_cpu_loop(tx: Sender<DaemonEvent>) -> Result<(), anyhow::Error
     program.attach("sched", "sched_switch")?;
     info!("{}", t("cpu-monitor-started"));
 
-    // 获取准确的物理在线核心列表
+    // 获取准确的物理在线核心列表 (仅启动日志用; 采样 loop 内每 tick 重读)
     let online_cpus_list = online_cpus().map_err(|e| {
         anyhow::anyhow!("{}", t_with_args("cpu-monitor-online-cpus-failed", &fluent_args!("error" => format!("{:?}", e))))
     })?;
-    let max_cpu_id = online_cpus_list.iter().copied().max().unwrap_or(0) as usize;
     info!("{}", t_with_args("cpu-monitor-online-cpus", &fluent_args!("cpus" => format!("{:?}", online_cpus_list))));
 
     let bpf_ptr = bpf as *mut Ebpf;
@@ -109,9 +190,13 @@ pub async fn start_cpu_loop(tx: Sender<DaemonEvent>) -> Result<(), anyhow::Error
     });
 
     tokio::spawn(async move {
-        // 根据最大 CPU ID 初始化历史记录向量，避免越界
-        let mut last_idle_times = vec![0u64; max_cpu_id + 1];
-        let mut last_busy_times = vec![0u64; max_cpu_id + 1];
+        // 历史向量按 SoC 全核槽位定长 (8 核), 与运行期在线集合变化解耦 —
+        // 若按启动快照长度分配, 后续上线的核 (如 cpu5/6/7) 会索引越界.
+        /// SoC 核数上限 (与 scheduler::hotplug::threshold::MAX_CPU_ID+1 一致,
+        /// 本地声明避免 monitor → scheduler 反向耦合)
+        const MAX_CPU_SLOTS: usize = 8;
+        let mut last_idle_times = vec![0u64; MAX_CPU_SLOTS];
+        let mut last_busy_times = vec![0u64; MAX_CPU_SLOTS];
         let mut last_check_time = get_ktime_ns();
 
         // TGID 级聚合数据：per-PID 的历史值
@@ -131,6 +216,13 @@ pub async fn start_cpu_loop(tx: Sender<DaemonEvent>) -> Result<(), anyhow::Error
             last_check_time = now_ktime;
 
             if real_delta_ns == 0 { continue; }
+
+            // 热插拔联动 (失明修复): 每 tick 重读在线核集合.
+            // 旧实现用启动快照 — 核被 hotplug/触摸/外部模块拉起后, loads 对
+            // 新在线核永久失明: 负载关核决策看不到它们 → 滞留在线永不回落
+            // (真机观测: 触摸旁路拉起 cpu5/6/7 后 20s 空闲仍全开).
+            let online_cpus_list: Vec<u32> = online_cpus().unwrap_or_default();
+            if online_cpus_list.is_empty() { continue; }
 
             let zero_key: u32 = 0;
             let per_cpu_idle_values = core_idle_map.get(&zero_key, 0);
@@ -178,6 +270,17 @@ pub async fn start_cpu_loop(tx: Sender<DaemonEvent>) -> Result<(), anyhow::Error
                 core_utils.push(util);
                 last_idle_times[idx] = adj_idle;
                 last_busy_times[idx] = adj_busy;
+            }
+
+            // Phase 1 / ticket-03 扩展: 把 (cpu_id, util_0_1) 推到 idle_snapshot,
+            // hotplug 模块从这里读 per-CPU idle/util.
+            // 注意: 只能在这里 push 一次, 必须在 core_utils 构建完成后.
+            {
+                let mut pairs: Vec<(u32, f32)> = Vec::with_capacity(core_utils.len());
+                for (&cpu_id, &util) in online_cpus_list.iter().zip(core_utils.iter()) {
+                    pairs.push((cpu_id, util));
+                }
+                idle_snapshot_push(&pairs);
             }
 
             // 2. 前台应用利用率计算

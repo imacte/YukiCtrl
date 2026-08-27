@@ -217,7 +217,11 @@ impl FasController {
         if self.handle_loading(actual_ms, is_heavy) { return; }
         if self.is_loading { return; }
         if self.post_loading_ignore > 0 { self.post_loading_ignore -= 1; return; }
-        if frame_delta_ns > max_ns { return; }
+        if frame_delta_ns > max_ns {
+            // D5: 丢帧 panic — 通知 hotplug loop 立即 enable 所有 cpu, 不等 debounce.
+            super::set_fas_panic();
+            return;
+        }
 
         // 帧率采样
         let current_fps = 1_000_000_000.0 / frame_delta_ns as f32;

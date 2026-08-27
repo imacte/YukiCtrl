@@ -1,7 +1,7 @@
 #!/system/bin/sh
 #
 # ########################################################################################
-#   yumi 模块安装脚本
+#   核心领航员 (core-pilot) 模块安装脚本
 #   作者: yuki
 # ########################################################################################
 
@@ -24,11 +24,11 @@ if [ -z "$CURRENT_LOCALE" ]; then
 fi
 
 LANG_CODE="en"
-MSG_WELCOME="Welcome to Yumi Scheduler!"
+MSG_WELCOME="Welcome to Core Pilot!"
 
 if echo "$CURRENT_LOCALE" | $BUSYBOX grep -qi "zh"; then
   LANG_CODE="zh"
-  MSG_WELCOME="欢迎使用 Yumi 调度！"
+  MSG_WELCOME="欢迎使用 核心领航员！"
 fi
 
 # --- 仅输出欢迎信息 ---
@@ -38,3 +38,10 @@ ui_print " "
 
 # --- 结束 ---
 # 保留模块默认配置不变，不进行任何文件操作
+# --- Phase 2 / ticket-04 D7: KSU allowlist hint ---
+ui_print " "
+ui_print "[HOTPLUG-D7] needs KSU allowlist:"
+ui_print "    KSU Manager - Superuser - core-pilot - module settings - allow:"
+ui_print "      /sys/devices/system/cpu/cpu*/online"
+ui_print "    Without this hotplug will log D7-SELinux-KSU-deny."
+ui_print " "

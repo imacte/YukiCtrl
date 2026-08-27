@@ -3,7 +3,7 @@ meta:
   name: "default_config"
   author: "yuki"
   language: "en"
-  loglevel: "INFO"
+  loglevel: "DEBUG"
 
 # 主要功能开关
 function:
