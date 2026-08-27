@@ -34,10 +34,26 @@ use crate::fluent_args;
 
 static LOG_HANDLE: OnceCell<Mutex<Handle>> = OnceCell::new();
 
-/// 单个日志文件最大字节数 (10 MB), 触发轮转
-const LOG_ROTATE_BYTES: u64 = 10 * 1024 * 1024;
-/// 保留的历史日志文件数量
-const LOG_ROTATE_KEEP: u32 = 3;
+/// 默认单文件上限 10 MB; 可用 LOG_ROTATE_BYTES 环境变量覆盖 (便于现场验证轮转).
+const DEFAULT_ROTATE_BYTES: u64 = 10 * 1024 * 1024;
+/// 默认保留历史日志数量; 可用 LOG_ROTATE_KEEP 覆盖.
+const DEFAULT_ROTATE_KEEP: u32 = 3;
+
+fn rotate_bytes() -> u64 {
+    std::env::var("LOG_ROTATE_BYTES")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|&v| v > 0)
+        .unwrap_or(DEFAULT_ROTATE_BYTES)
+}
+
+fn rotate_keep() -> u32 {
+    std::env::var("LOG_ROTATE_KEEP")
+        .ok()
+        .and_then(|v| v.trim().parse::<u32>().ok())
+        .filter(|&v| v > 0)
+        .unwrap_or(DEFAULT_ROTATE_KEEP)
+}
 
 fn parse_level(level_str: &str) -> LevelFilter {
     match level_str.to_uppercase().as_str() {
@@ -98,8 +114,8 @@ fn build_config(level: LevelFilter) -> Result<Config> {
     let archive_pattern = log_dir.join("daemon.{}.log");
 
     let roller = FixedWindowRoller::builder()
-        .build(archive_pattern.to_str().unwrap(), LOG_ROTATE_KEEP)?;
-    let trigger = SizeTrigger::new(LOG_ROTATE_BYTES);
+        .build(archive_pattern.to_str().unwrap(), rotate_keep())?;
+    let trigger = SizeTrigger::new(rotate_bytes());
     let policy = CompoundPolicy::new(Box::new(trigger), Box::new(roller));
 
     let file_appender = RollingFileAppender::builder()
