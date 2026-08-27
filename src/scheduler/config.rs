@@ -223,12 +223,28 @@ pub struct Config {
     pub io_settings: IOSettings,
     #[serde(default, rename = "CpuIdle")]
     pub cpu_idle: CpuIdle,
-    
+
     // 按场景划分的性能模式
     #[serde(default)] pub powersave: Mode,
     #[serde(default)] pub balance: Mode,
     #[serde(default)] pub performance: Mode,
     #[serde(default)] pub fast: Mode,
+
+    /// Phase 2 / ticket-07: 按前台包名施加调度偏置 (Restrict / Boost).
+    /// YAML 示例:
+    /// ```yaml
+    /// app_rules:
+    ///   - package: com.tencent.tmgp.pubgmhd
+    ///     rule_type: boost
+    ///     strength: heavy
+    ///   - package: com.android.settings
+    ///     rule_type: restrict
+    ///     strength: light
+    ///     disable_burst: true
+    /// ```
+    /// 默认空列表 — 不配置即不施加偏置 (向后兼容).
+    #[serde(default)]
+    pub app_rules: Vec<crate::scheduler::app_rule::AppRule>,
 }
 
 impl Config {

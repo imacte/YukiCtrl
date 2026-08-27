@@ -54,7 +54,10 @@ fn build_ebpf() -> Result<PathBuf, Box<dyn std::error::Error>> {
         "--target-dir", target_dir.to_str().unwrap(),
     ];
 
-    #[cfg(not(debug_assertions))]
+    // yumi-ebpf 永远编 release profile: BPF ELF 越小越好,
+    // debug profile 的 yumi-ebpf 大 5x 且 load 时内核要 strip debug info.
+    // build.rs 自身也总是 release cfg(not(debug_assertions)),
+    // 这样子 cargo 和 host cargo 路径永远一致.
     ebpf_args.push("--release");
 
     // LLVM 22+ 已移除 `-Oz`; 通过 workspace Cargo.toml 中
@@ -77,6 +80,10 @@ fn build_ebpf() -> Result<PathBuf, Box<dyn std::error::Error>> {
     let profile = "debug";
     #[cfg(not(debug_assertions))]
     let profile = "release";
+    // 上面的 cfg 块保持不变: build.rs 自身在 release cfg 下编,
+    // 子 cargo 现在永远传 --release, 所以预期路径是 release/.
+    // 修过的 bug (ticket-04): debug build 时产物路径错配.
+    // 现在一致后, 实际编出路径始终是 release/.
 
     let built_obj = target_dir
         .join("bpfel-unknown-none")

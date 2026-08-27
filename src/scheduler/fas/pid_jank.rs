@@ -122,10 +122,19 @@ impl FasController {
         } else {
             self.jank_streak = 0;
             self.consecutive_normal_frames += 1;
-            // jank_cooldown 期间传入 0.0 让 util_gain=1.0，
-            // 确保从卡顿恢复的过渡期 PID 全力拉频，不被旧的低 util 数据拖后腿
+            // jank_cooldown 期间: 喂压力指数的"高位标记" 0.99 强迫 PID 全力拉频.
+            // 这样既能保留原 jank 恢复期高增益语义, 又不依赖 fg_util 通道.
+            // 之外: 压力指数归一化到 0..1, 主输入由此驱动.
+            let pressure_norm = self.ema_pressure_index / 100.0;
             let pid_util = if self.jank_cooldown > 0 { 0.0 } else { self.ema_fg_util };
-            let raw = self.pid.compute(ema_err, inst_err, norm, pid_util);
+            // 调高压力指数到 0.99 (cooldown 期) 让 PID 全力拉频;
+            // 否则如实传 ema_pressure_index/100, 让 P 项按真实压力衰减或保持.
+            let pressure_for_pid = if self.jank_cooldown > 0 {
+                0.99_f32
+            } else {
+                pressure_norm
+            };
+            let raw = self.pid.compute(ema_err, inst_err, norm, pid_util, pressure_for_pid);
             if raw > 0.0 {
                 let d = if self.downgrade_boost_active { 0.0 } else { 1.0 };
                 let floor_guard = if self.perf_index < floor + 0.15 { 0.3 } else { 1.0 };

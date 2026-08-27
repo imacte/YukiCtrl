@@ -25,6 +25,12 @@ pub mod config;
 pub mod scheduler;
 pub mod fas;
 pub mod cpu_load_governor;
+pub mod hotplug;
+// Phase 2 / ticket-07: App 规则引擎 (按前台包名施加调度偏置)
+pub mod app_rule;
+// 任务 #5 / ticket-09: sense snapshot 写盘器 (供 WebUI 轮询)
+// 注意: sensor 是顶层模块 (src/sensor/), 这里 use 而非 pub mod.
+use crate::sensor::start_sense_snapshot_thread;
 
 use crate::i18n::{t, load_language, t_with_args};
 use crate::fluent_args; 
@@ -155,6 +161,34 @@ pub fn start_scheduler_thread(rx: mpsc::Receiver<DaemonEvent>) -> Result<()> {
     
     log::info!("{}", t("main-config-watch-thread-create"));
 
+    // ============================================================
+    // Hotplug 主循环 (200ms tick, 独立线程)
+    // ============================================================
+    if let Err(e) = hotplug::init_state_file() {
+        log::warn!("hotplug init_state_file failed: {}", e);
+    }
+    // Phase 2 / ticket-07: 把当前 config.app_rules 注入 hotplug 全局引擎,
+    // 这样 hotplug 200ms tick 才能根据前台包名调整 off/on 阈值 (漏洞 3).
+    // 注意: OnceLock 不可覆盖, 后续若 config 重载需要新的注入机制 (本任务范围外).
+    {
+        let cfg_lock = shared_config.read().unwrap();
+        hotplug::set_global_app_rule_engine(
+            app_rule::AppRuleEngine::new(cfg_lock.app_rules.clone())
+        );
+    }
+    if let Err(e) = hotplug::start_hotplug_thread() {
+        log::error!("hotplug thread start failed: {}", e);
+    } else {
+        log::info!("hotplug thread started");
+    }
+
+    // 任务 #5 / ticket-09: sense snapshot 写盘线程 (供 WebUI SensePanel 轮询)
+    if let Err(e) = start_sense_snapshot_thread() {
+        log::error!("sense snapshot thread start failed: {}", e);
+    } else {
+        log::info!("sense snapshot thread started");
+    }
+
     // ==========================================
     // IPC 监听主线程 (负责所有的状态机流转与调度干预)
     // ==========================================
@@ -206,6 +240,33 @@ pub fn start_scheduler_thread(rx: mpsc::Receiver<DaemonEvent>) -> Result<()> {
                     }
                 }
             }
+
+            // Phase 2 / ticket-07-fix: 共享的 "应用 App 规则偏置" 流程.
+            // 入口: (a) ModeChange 事件处理 (mode 变了, 顺便刷偏置);
+            //       (b) AppRuleRefresh 事件处理 (mode 没变, 只刷偏置).
+            // 注: hotplug 的偏置由 hotplug 自己的 run_one_tick 每次读前台包名算,
+            //     此函数只负责 FAS 侧 (target_pressure). 这样 hotplug 与 FAS 解耦.
+            let apply_app_rule_bias = |fas_ctl: &mut fas::controller::FasController,
+                                       cfg: &Arc<RwLock<Config>>,
+                                       current_mode: &str,
+                                       package_name: &str,
+                                       base_target: f32| {
+                let bias_offset = {
+                    let cfg_lock = cfg.read().unwrap();
+                    app_rule::AppRuleEngine::new(cfg_lock.app_rules.clone())
+                        .match_rule(package_name)
+                        .map(|r| app_rule::AppRuleBias::from_rule(Some(r)))
+                        .map(|b| b.target_util_offset)
+                        .unwrap_or(0)
+                };
+                fas_ctl.set_target_pressure_with_app_bias(base_target, bias_offset);
+                if bias_offset != 0 {
+                    log::info!(
+                        "[app_rule] mode={} pkg={} target={:.1} bias={:+}",
+                        current_mode, package_name, base_target, bias_offset
+                    );
+                }
+            };
             
             // 事件循环包在 catch_unwind 中：任何 panic 都被捕获并记录，
             // 避免调度线程静默死亡（进程存活但频率停在最后状态）
@@ -268,11 +329,26 @@ pub fn start_scheduler_thread(rx: mpsc::Receiver<DaemonEvent>) -> Result<()> {
                             log::info!("{}", t_with_args("scheduler-mode-change-request", &fluent_args!(
                                 "old" => old_mode.clone(), "new" => mode.as_str(), "pkg" => package_name.as_str(), "temp" => temperature
                             )));
-                            
+
                             *current_mode_lock = mode.clone();
-                            drop(current_mode_lock); 
+                            drop(current_mode_lock);
 
                             let _ = utils::try_write_file(&mode_file_path, mode.as_bytes());
+
+                            // Phase 2 / ticket-06: 模式切换 → 更新 fas_controller target_pressure.
+                            // 幂等, FAS 接管前先用 mode 的默认值, 避免 reset_runtime 后跑空.
+                            //
+                            // Phase 2 / ticket-07: 若触发 ModeChange 的就是当前前台包,
+                            // 叠加 App 规则偏置 (Restrict → 降低 target, Boost → 提高).
+                            // ModeChange 事件的 package_name 就是触发源, 直接拿来匹配.
+                            let target = fas::controller::mode_target_pressure(&mode);
+                            apply_app_rule_bias(
+                                &mut fas_controller,
+                                &config_clone,
+                                &mode,
+                                &package_name,
+                                target,
+                            );
 
                             if mode == "fas" {
                                 // 进游戏：释放 CLG 控制权，激活 FAS
@@ -332,6 +408,29 @@ pub fn start_scheduler_thread(rx: mpsc::Receiver<DaemonEvent>) -> Result<()> {
                         }
                     },
 
+                    // --- 2.5 Phase 2 / ticket-07-fix: 前台包名变化 (与 ModeChange 解耦) ---
+                    // 触发场景: 用户切换前台应用, 但 app_detect 判定模式没变 (例如两个
+                    // 应用都映射到 balance 模式). ModeChange 不会发, 但 AppRule 偏置需要更新.
+                    DaemonEvent::AppRuleRefresh { package_name } => {
+                        if !is_screen_on { continue; } // 息屏期间不施加 App 规则
+                        let current_mode = mode_clone.lock().unwrap().clone();
+                        // 只对 FAS 模式应用 (非 FAS 模式靠 mode 自带的 target, App 规则
+                        // 只在 FAS 调度下有意义; 非 FAS 用 CLG 完全不同的决策路径).
+                        if current_mode == "fas" {
+                            let target = fas::controller::mode_target_pressure(&current_mode);
+                            apply_app_rule_bias(
+                                &mut fas_controller,
+                                &config_clone,
+                                &current_mode,
+                                &package_name,
+                                target,
+                            );
+                        }
+                        // 注: hotplug 不在此处触发 — hotplug::run_one_tick 每个 tick 自动
+                        // 读前台包名重算偏置, 频率足够高, 不需要事件驱动. 事件驱动 FAS 是
+                        // 因为 FAS 调频成本高, 必须精确触发才划算.
+                    },
+
                     // --- 3. CPU 负载事件 (eBPF 驱动) ---
                     DaemonEvent::SystemLoadUpdate { core_utils, foreground_max_util } => {
                         let current_mode = mode_clone.lock().unwrap().clone();
@@ -339,6 +438,10 @@ pub fn start_scheduler_thread(rx: mpsc::Receiver<DaemonEvent>) -> Result<()> {
                         if is_screen_on && current_mode == "fas" && fas_suspended_at.is_none() {
                             fas_controller.update_cpu_util(foreground_max_util);
                             fas_controller.update_core_utils(&core_utils);
+                            // Phase 2 / ticket-06: 顺手喂一次综合压力指数 (frame_drop_active=false,
+                            // 因为这是 CPU 负载事件, 不知道 frame 状态; 真正的 frame_drop 由
+                            // frame_pipeline 单独发事件喂入).
+                            fas_controller.tick_pressure_index(false);
                         }
                         // 如果 CLG 处于活动状态（包含日常模式或息屏 Doze 模式），全权投喂
                         if cpu_governor.is_active() {

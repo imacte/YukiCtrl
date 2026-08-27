@@ -24,11 +24,16 @@ const mockRules = {
   }
 };
 
+// 任务 #5: config.yaml 中也存 app_rules, 这里给个 mock 实例
 const mockConfig = {
   meta: { name: "default_config", author: "yuki", language: "en", loglevel: "INFO" },
   function: { CpuIdleScalingGovernor: false, IOOptimization: true },
   IO_Settings: { Scheduler: "none", read_ahead_kb: "128", nomerges: "2", iostats: "0" },
   CpuIdle: { current_governor: "" },
+  app_rules: [
+    { package: 'com.miHoYo.GenshinImpact', rule_type: 'boost', strength: 'heavy' },
+    { package: 'com.android.settings', rule_type: 'restrict', strength: 'light', disable_burst: true }
+  ],
   powersave: {
     cpu_load_governor: { up_threshold: 0.85, down_threshold: 0.60, smoothing_up: 0.40, smoothing_down: 0.50, down_rate_limit_ticks: 2, headroom_factor: 1.10, headroom_ramp: 0.15, perf_floor: 0.10, perf_ceil: 0.70, perf_init: 0.30, up_jump_threshold: 0.35, slow_up_scale: 0.02, slow_down_scale: 0.5, down_fast_threshold: 0.10, down_fast_mult: 2.5, spike_jump_threshold: 0.35, spike_decay: 0.30 }
   },

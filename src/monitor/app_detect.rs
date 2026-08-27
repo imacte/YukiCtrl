@@ -81,6 +81,14 @@ pub fn get_current_pid() -> i32 {
     CURRENT_PID.load(Ordering::Relaxed)
 }
 
+/// Phase 2 / ticket-07: 暴露当前前台包名给其他模块 (App 规则引擎等).
+///
+/// 调用方应假设返回字符串可能为空 (例如 app_detect 线程尚未跑起来,
+/// 或者系统刚启动还没有前台应用). 比较时建议用 `.is_empty()` 守卫.
+pub fn current_package() -> String {
+    CURRENT_PACKAGE.lock().unwrap().clone()
+}
+
 // 在检测到新包名时更新它
 fn set_current_package(pkg: &str, pid: i32) {
     *CURRENT_PACKAGE.lock().unwrap() = pkg.to_string();
@@ -310,12 +318,31 @@ pub fn app_detection_loop(
                         mode: new_mode.clone(),
                         temperature: current_temp,
                     });
-                    last_mode = new_mode;
+                    last_mode = new_mode.clone();
+                }
+
+                // Phase 2 / ticket-07-fix: 前台包名变化需要通知 scheduler 更新 App 规则偏置.
+                //
+                // 与 ModeChange 的关系:
+                //   - mode 也变了 (last_mode != new_mode): 上方 ModeChange 分支已经会
+                //     通过 apply_app_rule_bias 应用偏置, 不再重复发 AppRuleRefresh, 避免
+                //     scheduler 事件循环处理两次.
+                //   - mode 没变, 只切了前台包: 上方 if 没进 ModeChange 分支, 这里必须
+                //     发 AppRuleRefresh, 否则同模式应用切换下偏置不更新.
+                //
+                // 触发条件: 包变了 AND 模式没变 (last_mode == new_mode 在上方 if 守卫内
+                // 已隐含成立, 因为上方 if 失败 = mode 没变).
+                if last_package != final_pkg && last_mode == new_mode {
+                    let _ = tx.send(DaemonEvent::AppRuleRefresh {
+                        package_name: final_pkg.clone(),
+                    });
                 }
                 last_package = final_pkg;
             }
         }
 
+        // 任务 #6 reliability: 主循环心跳, watchdog 检查时用
+        crate::watchdog::heartbeat_tick();
         thread::sleep(Duration::from_millis(1500));
     }
 }

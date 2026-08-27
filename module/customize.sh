@@ -38,3 +38,10 @@ ui_print " "
 
 # --- 结束 ---
 # 保留模块默认配置不变，不进行任何文件操作
+# --- Phase 2 / ticket-04 D7: KSU allowlist hint ---
+ui_print " "
+ui_print "[HOTPLUG-D7] needs KSU allowlist:"
+ui_print "    KSU Manager - Superuser - yumi - module settings - allow:"
+ui_print "      /sys/devices/system/cpu/cpu*/online"
+ui_print "    Without this hotplug will log D7-SELinux-KSU-deny."
+ui_print " "

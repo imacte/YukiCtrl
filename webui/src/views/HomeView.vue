@@ -124,7 +124,9 @@ const copyQQGroup = async () => {
     <div class="section-title">{{ t('more_features') }}</div>
     <div class="grid-menu">
         <van-grid clickable :column-num="3" :gutter="12" :border="false">
-            <van-grid-item icon="apps-o" :text="t('app_management')" to="/apps" />
+            <van-grid-item icon="apps-o" :text="t('app_management')" to="/app-rules" />
+            <van-grid-item icon="fire-o" :text="t('hotplug_settings')" to="/hotplug" />
+            <van-grid-item icon="chart-trending-o" :text="t('sense_panel')" to="/sense" />
             <van-grid-item icon="setting-o" :text="t('detailed_config')" to="/config" />
             <van-grid-item icon="notes-o" :text="t('view_log')" to="/log" />
         </van-grid>

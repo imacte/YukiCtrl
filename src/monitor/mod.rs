@@ -28,6 +28,13 @@ pub mod screen_detect;
 pub mod fps_monitor;
 pub mod cpu_monitor;
 
+// Ticket-03 / Phase 1: 八路感知新增四个采集器
+pub mod touch_monitor;
+pub mod gpu_monitor;
+pub mod io_monitor;
+pub mod swap_monitor;
+pub mod sense_snapshot;
+
 use crate::common::DaemonEvent;
 use crate::fluent_args;
 use crate::i18n::{t, t_with_args};
@@ -123,6 +130,22 @@ pub fn start_monitor(tx: Sender<DaemonEvent>) -> Result<(), Box<dyn Error>> {
                 error!("{}", t("monitor-cpu-tokio-failed"));
             }
         })?;
+
+    // 7. Ticket-03 / Phase 1 八路感知新增: 触摸采集 (epoll)
+    let tx_touch = tx.clone();
+    touch_monitor::start_touch_loop(tx_touch);
+
+    // 8. GPU 采集 (200ms tick, /sys/class/devfreq/*)
+    let tx_gpu = tx.clone();
+    gpu_monitor::start_gpu_loop(tx_gpu);
+
+    // 9. IO 压力采集 (/proc/pressure/io)
+    let tx_io = tx.clone();
+    io_monitor::start_io_loop(tx_io);
+
+    // 10. Swap / 内存压力采集 (/proc/pressure/memory + meminfo + zram)
+    let tx_swap = tx.clone();
+    swap_monitor::start_swap_loop(tx_swap);
 
     // 7. 启动应用检测主循环 (阻塞)
     app_detect::app_detection_loop(

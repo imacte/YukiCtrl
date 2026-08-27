@@ -44,6 +44,13 @@ pub enum DaemonEvent {
     ConfigReload(RulesConfig),
 
     ScreenStateChange(bool),
+
+    /// Phase 2 / ticket-07-fix: 前台包名变化事件 (不一定伴随模式变化).
+    /// App 规则引擎需要按"当前前台包名"施加偏置, 与模式解耦.
+    /// 触发点: app_detect 线程检测到 last_package != final_pkg 时发送.
+    AppRuleRefresh {
+        package_name: String,
+    },
 }
 
 /// 获取模块根目录的绝对路径
