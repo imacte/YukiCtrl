@@ -90,14 +90,34 @@ fn read_governor(path: &Path) -> Option<&'static str> {
     Some(Box::leak(s.into_boxed_str()))
 }
 
+/// GPU 使用率节点 (高通 kgsl 优先 → devfreq/load 兜底)
+const KGSL_BUSY_PATH: &str = "/sys/class/kgsl/kgsl-3d0/gpu_busy_percentage";
+/// 高通当前频率兜底 (部分 kgsl 平台 devfreq 下没有 cur_freq)
+const KGSL_CLK_PATH: &str = "/sys/class/kgsl/kgsl-3d0/gpuclk";
+
+/// 读 "42 %" / "42%" 这类 busy 文件, 取出前导数字
+fn read_kgsl_busy() -> Option<u32> {
+    let s = fs::read_to_string(KGSL_BUSY_PATH).ok()?;
+    let num: String = s.trim().chars().take_while(|c| c.is_ascii_digit()).collect();
+    let v: u32 = num.parse().ok()?;
+    Some(v.min(100))
+}
+
 /// 一次性 tick: 读 GPU 状态并 push
 fn tick_once(gpu_root: Option<&str>) {
     let (cur, max, load, gov);
     if let Some(root) = gpu_root {
         let p = Path::new(root);
-        cur = read_u64(&p.join("cur_freq"));
+        cur = match read_u64(&p.join("cur_freq")) {
+            Some(v) if v > 0 => Some(v),
+            // devfreq 无 cur_freq (高通常见) → kgsl gpuclk 兜底
+            _ => read_u64(Path::new(KGSL_CLK_PATH)),
+        };
         max = read_u64(&p.join("max_freq"));
-        load = read_u32_percent(&p.join("load"));
+        load = match read_kgsl_busy() {
+            Some(v) => Some(v),
+            None => read_u32_percent(&p.join("load")),
+        };
         gov = read_governor(&p.join("governor"));
     } else {
         cur = None;

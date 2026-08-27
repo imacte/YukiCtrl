@@ -1,13 +1,18 @@
 // src/api/sense.ts
 //
-// 任务 #5 / ticket-09: 读取 daemon 写的 sense/snapshot.yaml.
+// 任务 #5 / ticket-09 + WebUI 合并版: 读取 daemon 写的 sense/snapshot.yaml.
 //
-// 数据源: src/sensor/snapshot_writer.rs (200ms tick 写盘)
-// WebUI 通过 KSU exec cat 读取 (沿用 bridge.ts 风格).
+// 数据源: src/sensor/snapshot_writer.rs (200ms tick 写盘, 双路径:
+//   sense/snapshot.yaml + webroot/sense/snapshot.yaml)
+// 读取顺序:
+//   1. KSU exec cat  (标准 bridge, file:// / http:// 均可用)
+//   2. 相对 fetch    (KSU Next / MMRL 本地 http server serve 模块目录时兜底)
+// 全部失败 → { ok:false } 并把 err 报给 UI (首页显示"链路断开", 不再静默吞错).
 
 import { Bridge } from '@/utils/bridge'
 
 const SENSE_PATH = '/data/adb/modules/core-pilot/sense/snapshot.yaml'
+const SENSE_REL_URL = 'sense/snapshot.yaml'
 
 /**
  * 与后端 SenseSnapshot + snapshot_writer.rs 输出字段一一对应.
@@ -22,7 +27,7 @@ export interface SenseSnapshot {
   io_some_pct: number
   /** IO 压力 full=10 % (0..=100) */
   io_full_pct: number
-  /** 内存 PSI full=10 % (0..=100) */
+  /** 内存 PSI full avg10 % (0..=100) — PSI 原生百分比 */
   mem_full_pct: number
   /** 内存 PSI full=10 绝对时间 (us, /proc/pressure/memory) */
   mem_full_us: number
@@ -30,8 +35,10 @@ export interface SenseSnapshot {
   swap_used_mb: number
   /** SoC 温度 (°C) */
   temp_c: number
-  /** 屏幕 FPS (0 = 不可读 / 屏幕关闭) */
+  /** 实测帧率 FPS (uprobe queueBuffer; 0 = 静止画面 / 未挂探针) */
   fps: number
+  /** 屏幕刷新率 Hz (dumpsys display renderFrameRate; 0 = 不可读) */
+  display_hz: number
   /** 屏幕是否亮起 */
   screen_on: boolean
   /** 触摸是否按下 */
@@ -44,6 +51,13 @@ export interface SenseSnapshot {
   updated_at_unix_ms: number
 }
 
+/** fetchSenseSnapshot 返回: ok=false 表示两条读取通道都失败 (UI 应显示断链) */
+export interface SenseResult {
+  data: SenseSnapshot
+  ok: boolean
+  err: string
+}
+
 const DEFAULT_SNAPSHOT: SenseSnapshot = {
   cpu_utils_pct: [0, 0, 0, 0, 0, 0, 0, 0],
   gpu_load_pct: 0,
@@ -54,6 +68,7 @@ const DEFAULT_SNAPSHOT: SenseSnapshot = {
   swap_used_mb: 0,
   temp_c: 0,
   fps: 0,
+  display_hz: 0,
   screen_on: false,
   touch_down: false,
   touch_age_ms: 9999,
@@ -61,18 +76,37 @@ const DEFAULT_SNAPSHOT: SenseSnapshot = {
   updated_at_unix_ms: 0,
 }
 
-/** 读取 daemon 200ms tick 写的 snapshot.yaml. */
-export async function fetchSenseSnapshot(): Promise<SenseSnapshot> {
+function fallback(err: string): SenseResult {
+  return { data: DEFAULT_SNAPSHOT, ok: false, err }
+}
+
+/** 读取 daemon 200ms tick 写的 snapshot.yaml (exec 主通道 → http 相对 fetch 兜底). */
+export async function fetchSenseSnapshot(): Promise<SenseResult> {
+  // ── 通道 1: KSU exec cat ──
   try {
     const raw = await Bridge.readFile(SENSE_PATH)
-    return parseSnapshotYaml(raw, DEFAULT_SNAPSHOT)
-  } catch {
-    return DEFAULT_SNAPSHOT
+    if (raw && raw.includes('updated_at_unix_ms')) {
+      return { data: parseSnapshotYaml(raw), ok: true, err: '' }
+    }
+    return fallback('snapshot 内容异常')
+  } catch (e1) {
+    // ── 通道 2: http 相对 fetch (daemon 同时写 webroot/sense/) ──
+    try {
+      const resp = await fetch(SENSE_REL_URL, { cache: 'no-store' })
+      if (!resp.ok) return fallback(`exec:${e1}; http:${resp.status}`)
+      const raw = await resp.text()
+      if (raw && raw.includes('updated_at_unix_ms')) {
+        return { data: parseSnapshotYaml(raw), ok: true, err: '' }
+      }
+      return fallback(`exec:${e1}; http 内容异常`)
+    } catch (e2) {
+      return fallback(`exec:${e1}; fetch:${e2}`)
+    }
   }
 }
 
-function parseSnapshotYaml(raw: string, fallback: SenseSnapshot): SenseSnapshot {
-  const result: SenseSnapshot = { ...fallback }
+function parseSnapshotYaml(raw: string): SenseSnapshot {
+  const result: SenseSnapshot = { ...DEFAULT_SNAPSHOT }
   for (const line of raw.split('\n')) {
     const trimmed = line.trim()
     if (!trimmed || trimmed.startsWith('#')) continue
@@ -111,6 +145,9 @@ function parseSnapshotYaml(raw: string, fallback: SenseSnapshot): SenseSnapshot 
         break
       case 'fps':
         result.fps = parseInt(value, 10) || 0
+        break
+      case 'display_hz':
+        result.display_hz = parseFloat(value) || 0
         break
       case 'screen_on':
         result.screen_on = value === 'true'

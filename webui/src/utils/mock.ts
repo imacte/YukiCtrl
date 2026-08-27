@@ -54,6 +54,8 @@ let simulatedModeTxt = "balance";
 
 export const MockBridge = {
   async isDaemonRunning(): Promise<boolean> { await delay(100); return true; },
+  async readFile(path: string): Promise<string> { await delay(50); throw new Error(`mock: no file ${path}`); },
+  async writeFile(path: string, content: string): Promise<void> { await delay(50); },
   async getCurrentMode(): Promise<string> { await delay(200); return simulatedModeTxt; },
   async setMode(mode: string): Promise<void> { await delay(200); mockRules.global_mode = mode; setTimeout(() => { simulatedModeTxt = mode; }, 800); },
   async getInstalledApps(): Promise<string[]> { await delay(500); return mockApps; },

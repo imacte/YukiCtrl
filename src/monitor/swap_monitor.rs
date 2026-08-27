@@ -72,23 +72,29 @@ fn parse_psi_line(line: &str) -> Option<(bool, f32, u64)> {
 }
 
 /// 读 /proc/pressure/memory 一次
-fn read_memory_pressure() -> (u64, u64) {
+///
+/// 返回 (some_total_us, full_total_us, full_avg10_pct).
+/// avg10 是 PSI 原生百分比 (0..=100); total 是开机以来累计 us.
+/// Bugfix: 此前只存 total, snapshot_writer 又拿 total/10000 当百分比 → 恒 100%.
+fn read_memory_pressure() -> (u64, u64, f32) {
     let s = match fs::read_to_string(PROC_PRESSURE_MEM) {
         Ok(s) => s,
-        Err(_) => return (0, 0),
+        Err(_) => return (0, 0, 0.0),
     };
-    let mut some_us = 0;
-    let mut full_us = 0;
+    let mut some_us = 0u64;
+    let mut full_us = 0u64;
+    let mut full_avg10 = 0f32;
     for line in s.lines() {
-        if let Some((is_full, _avg, total)) = parse_psi_line(line) {
+        if let Some((is_full, avg10, total)) = parse_psi_line(line) {
             if is_full {
                 full_us = total;
+                full_avg10 = avg10;
             } else {
                 some_us = total;
             }
         }
     }
-    (some_us, full_us)
+    (some_us, full_us, full_avg10)
 }
 
 /// 读 /proc/meminfo, 提取 SwapTotal/SwapFree (KiB)
@@ -110,32 +116,50 @@ fn read_swap_kb() -> (u64, u64) {
 }
 
 /// 读 zram 状态, 失败 → (0, 0)
+///
+/// MIUI 内核 `/sys/block/zram0/mem_used_total` 可能恒报 0,
+/// 此时兜底解析 `/sys/block/zram0/mm_stat` 第 2 列 (orig_data_size≈used bytes).
+/// mm_stat 格式: disksize orig_data_size compr_data_size mem_used_total ...
 fn read_zram() -> (u64, u64) {
     let p = Path::new(ZRAM_DIR);
     if !p.exists() {
         return (0, 0);
     }
+    let parse_u64 = |s: &str| s.trim().parse::<u64>().unwrap_or(0);
     let used = fs::read_to_string(p.join("mem_used_total"))
-        .ok()
-        .and_then(|s| s.trim().parse::<u64>().ok())
+        .map(|s| parse_u64(&s))
         .unwrap_or(0);
+    let used = if used == 0 {
+        fs::read_to_string(p.join("mm_stat"))
+            .ok()
+            .and_then(|s| s.split_whitespace().nth(1).map(|v| parse_u64(v)))
+            .unwrap_or(0)
+    } else {
+        used
+    };
     let total = fs::read_to_string(p.join("disksize"))
-        .ok()
-        .and_then(|s| s.trim().parse::<u64>().ok())
+        .map(|s| parse_u64(&s))
         .unwrap_or(0);
     (used, total)
 }
 
 fn tick_once() {
-    let (mem_some, mem_full) = read_memory_pressure();
+    let (mem_some, mem_full, mem_full_avg10) = read_memory_pressure();
     let (swap_total, swap_free) = read_swap_kb();
     let (zram_used, zram_total) = read_zram();
     if zram_used > 0 || zram_total > 0 {
-        debug!("[swap_monitor] zram used={} total={}", zram_used, zram_total);
+        debug!(
+            "[swap_monitor] zram used={} ({:.0}MB) total={} mem_full_avg10={}",
+            zram_used,
+            zram_used as f32 / (1024.0 * 1024.0),
+            zram_total,
+            mem_full_avg10
+        );
     }
     swap_push(SwapState {
         mem_some_us: mem_some,
         mem_full_us: mem_full,
+        mem_full_avg10_pct: mem_full_avg10,
         swap_total_kb: swap_total,
         swap_free_kb: swap_free,
         zram_used_bytes: zram_used,

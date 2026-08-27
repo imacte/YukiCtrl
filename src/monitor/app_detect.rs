@@ -131,19 +131,30 @@ fn is_valid_user_app(pkg: &str, ignored_apps: &[String]) -> bool {
 }
 
 // 提取核心检测逻辑
+//
+// Bugfix: 此前 `pids.iter().rev()` 只取 cgroup.procs 尾部第一个命中 pid —
+// tail 往往是最近迁入的后台残留进程 (非真正焦点应用), 导致 current_pkg
+// 卡死在首个检出值. 现改为统计 top-app 内每个包名的进程数 (Android 主/
+// 渲染/GPU 进程同包名, 天然多票), 取票数最高者 — 与 topResumedActivity 高度一致.
 fn check_cgroup_path(path: &str, ignored_apps: &[String]) -> Option<(String, i32)> {
     if let Ok(content) = utils::read_file_content(path) {
-        let pids: Vec<&str> = content.split_whitespace().collect();
-        for pid_str in pids.iter().rev() {
+        let mut votes: std::collections::HashMap<String, (u32, i32)> =
+            std::collections::HashMap::new();
+        for pid_str in content.split_whitespace() {
             let cmdline_path = format!("/proc/{}/cmdline", pid_str);
-            if let Ok(cmdline) = utils::read_file_content(&cmdline_path) {
-                let pkg_name = cmdline.split('\0').next().unwrap_or("").trim();
-                if is_valid_user_app(pkg_name, ignored_apps) {
-                    let pid = pid_str.parse::<i32>().unwrap_or(0);
-                    return Some((pkg_name.to_string(), pid));
-                }
+            let Ok(cmdline) = utils::read_file_content(&cmdline_path) else { continue };
+            let pkg_name = cmdline.split('\0').next().unwrap_or("").trim();
+            if !is_valid_user_app(pkg_name, ignored_apps) {
+                continue;
             }
+            let pid = pid_str.parse::<i32>().unwrap_or(0);
+            let entry = votes.entry(pkg_name.to_string()).or_insert((0u32, pid));
+            entry.0 += 1;
         }
+        return votes
+            .into_iter()
+            .max_by_key(|(_, (count, _))| *count)
+            .map(|(pkg, (_, pid))| (pkg, pid));
     }
     None
 }

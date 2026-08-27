@@ -27,10 +27,6 @@ provide('isDark', isDark)
         <van-icon name="apps-o" size="22" />
         <span>规则</span>
       </router-link>
-      <router-link to="/sense" class="nav-item">
-        <van-icon name="eye-o" size="22" />
-        <span>感知</span>
-      </router-link>
       <router-link to="/log" class="nav-item">
         <van-icon name="notes-o" size="22" />
         <span>日志</span>

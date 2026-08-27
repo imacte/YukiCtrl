@@ -21,7 +21,7 @@ use std::num::NonZeroU32;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::ptr;
 use std::sync::mpsc::Sender;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use aya::Ebpf;
 use aya::maps::RingBuf;
@@ -61,11 +61,13 @@ const FRAMETIME_WINDOW: usize = 144;
 struct ProbeState {
     last_ktime_ns: Option<u64>,
     frametimes: VecDeque<Duration>,
+    /// 最近一次收到帧事件的墙钟时间 — 用于"画面静止"判定 (帧流停 = fps 归 0)
+    last_wall: Option<Instant>,
 }
 
 impl ProbeState {
     fn new() -> Self {
-        Self { last_ktime_ns: None, frametimes: VecDeque::with_capacity(FRAMETIME_WINDOW) }
+        Self { last_ktime_ns: None, frametimes: VecDeque::with_capacity(FRAMETIME_WINDOW), last_wall: None }
     }
 
     fn ingest(&mut self, ktime_ns: u64) {
@@ -79,10 +81,30 @@ impl ProbeState {
             }
         }
         self.last_ktime_ns = Some(ktime_ns);
+        self.last_wall = Some(Instant::now());
     }
 
     fn latest_frametime(&self) -> Option<Duration> {
         self.frametimes.front().copied()
+    }
+
+    /// 实测 FPS = 1e9 / 窗口平均帧间隔.
+    /// 帧流静默 (>1.2s 无事件) → 0 (静态 UI 不出帧, 显示旧值会误导).
+    fn fresh_fps(&self) -> u32 {
+        if self.frametimes.is_empty() {
+            return 0;
+        }
+        let stale = matches!(&self.last_wall, Some(t) if t.elapsed() > Duration::from_millis(1200));
+        if stale {
+            return 0;
+        }
+        let n = self.frametimes.len();
+        let total_ns: u128 = self.frametimes.iter().map(|d| d.as_nanos()).sum();
+        if total_ns == 0 {
+            return 0;
+        }
+        let avg_ns = total_ns / n as u128;
+        ((1_000_000_000u128 / avg_ns) as u32).min(240)
     }
 }
 
@@ -198,6 +220,11 @@ impl FpsManager {
     /// 当前 PID 的最新帧间隔
     fn latest_frametime(&self) -> Option<Duration> {
         self.states.get(&self.current_pid)?.latest_frametime()
+    }
+
+    /// 当前 PID 的实测 FPS (无 probe / 静止画面 → 0)
+    fn current_fps(&self) -> u32 {
+        self.states.get(&self.current_pid).map(|s| s.fresh_fps()).unwrap_or(0)
     }
 
     fn has_active_probe(&self) -> bool {
@@ -316,6 +343,10 @@ pub async fn start_fps_loop(tx: Sender<DaemonEvent>) -> Result<(), anyhow::Error
                 }
 
                 manager.poll_frames();
+
+                // Ticket: 把实测 FPS 推进 sense 快照 (WebUI 帧率卡).
+                // 之前 fps_push never used → snapshot.yaml 的 fps 恒 0.
+                crate::monitor::sense_snapshot::fps_push(manager.current_fps());
 
                 if let Some(delta) = manager.latest_frametime() {
                     if tx_clone

@@ -3,7 +3,6 @@ import { createRouter, createWebHashHistory } from 'vue-router'
 import HomeView from '../views/HomeView.vue'
 import AppRuleManagement from '../views/AppRuleManagement.vue'
 import ScheduleSettings from '../views/ScheduleSettings.vue'
-import SensePanel from '../views/SensePanel.vue'
 import LogViewerView from '../views/LogViewerView.vue'
 
 const router = createRouter({
@@ -18,7 +17,8 @@ const router = createRouter({
     { path: '/config', name: 'config', component: ScheduleSettings },
     // 旧的 HotplugSettings / ConfigEditorView 已并入调度页
     { path: '/hotplug', redirect: '/config' },
-    { path: '/sense', name: 'sense', component: SensePanel },
+    // 感知面板已合并进首页 (视图重复清理); 旧地址一律回首页
+    { path: '/sense', redirect: '/' },
     { path: '/log', name: 'log', component: LogViewerView }
   ]
 })

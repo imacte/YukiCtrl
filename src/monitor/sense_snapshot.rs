@@ -103,6 +103,9 @@ pub struct SwapState {
     pub mem_some_us: u64,
     /// 内存压力 full=10 (us)
     pub mem_full_us: u64,
+    /// 内存压力 full avg10 — PSI 原生百分比 (0..=100), 直接展示用.
+    /// 注意: mem_full_us 是 total 累计 us, 不能当窗口百分比用!
+    pub mem_full_avg10_pct: f32,
     /// SwapTotal (KiB)
     pub swap_total_kb: u64,
     /// SwapFree (KiB)
@@ -113,6 +116,7 @@ pub struct SwapState {
     pub zram_total_bytes: u64,
     pub updated_at_ns: u64,
 }
+
 
 // =================================================================
 //  2. SenseSnapshot — 八路聚合
@@ -132,8 +136,11 @@ pub struct SenseSnapshot {
     // ---- 下面 3 路在 ticket-02 之前已经存在, 这里只做轻量 re-export 字段 ----
     /// 6) 温度 (millidegree Celsius, 45000 = 45.0°C); i32::MIN = 不可读
     pub temp_millic: i32,
-    /// 7) 屏幕 FPS (0 = 不可读 / 屏幕关闭)
+    /// 7) 屏幕 FPS (实测帧率, 0 = 不可读 / 屏幕关闭 / 画面静止)
     pub fps: u32,
+    /// 屏幕刷新率 Hz (dumpsys display renderFrameRate; 0 = 不可读).
+    /// 注意与 fps 区分: fps = 应用实际出帧速率, display_hz = 面板当前模式 Hz.
+    pub display_hz: f32,
     /// 8) 屏幕是否亮起 (true = ON)
     pub screen_on: bool,
 
@@ -297,6 +304,15 @@ pub(crate) fn fps_push(fps: u32) {
     let h = sense_snapshot_handle();
     if let Ok(mut g) = h.lock() {
         g.fps = fps;
+        g.updated_at_ns = now_ns();
+    }
+}
+
+/// push 屏幕刷新率 (hz_poller 调用, ~2s tick)
+pub(crate) fn hz_push(hz: f32) {
+    let h = sense_snapshot_handle();
+    if let Ok(mut g) = h.lock() {
+        g.display_hz = hz;
         g.updated_at_ns = now_ns();
     }
 }
