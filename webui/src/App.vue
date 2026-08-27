@@ -205,4 +205,74 @@ a.router-link-active { color: var(--accent); }
 .van-tabbar-item--active {
   color: var(--accent) !important;
 }
+
+/* ============================================================
+   配置子页公共样式 (问题 5 拆分后由 8 个子页面共享, 避免重复声明)
+   ============================================================ */
+.sub-page { padding-bottom: 20px; max-width: 600px; margin: 0 auto; }
+.sub-body { padding: 12px 16px 0; }
+.cfg-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px;
+  margin-bottom: 12px;
+}
+.cfg-card-head { display: flex; justify-content: space-between; align-items: center; }
+.cfg-card-name { font-size: 16px; font-weight: 700; }
+.cfg-intro { font-size: 12.5px; color: var(--text-secondary); line-height: 1.65; margin: 10px 0 4px; }
+.cfg-banner { padding: 8px 12px; border-radius: 8px; margin-bottom: 10px; font-size: 13px; }
+.cfg-banner.err { background: var(--danger-soft); color: var(--danger); }
+.cfg-banner.ok { background: var(--success-soft); color: var(--success); }
+.save-btn {
+  border: none; background: var(--accent); color: #fff;
+  padding: 7px 18px; border-radius: 18px; font-size: 13px;
+}
+.save-btn:active { opacity: .85; }
+.auto-tag, .live-tag { font-size: 11px; padding: 3px 10px; border-radius: 10px; }
+.auto-tag { color: var(--text-secondary); background: rgba(0,0,0,.06); }
+.live-tag { color: var(--success); background: var(--success-soft); }
+.readout { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin-top: 10px; }
+.readout div {
+  background: var(--bg-base); border-radius: 8px; padding: 9px 10px;
+  display: flex; justify-content: space-between; align-items: center;
+}
+.readout span { font-size: 12px; color: var(--text-muted); }
+.readout b { font-size: 15px; font-variant-numeric: tabular-nums; }
+.mode-chip-row { display: flex; gap: 8px; margin: 10px 0 4px; }
+.mode-chip {
+  flex: 1; border: 1.5px solid var(--border); background: var(--bg-base);
+  border-radius: 16px; padding: 7px 0; font-size: 13px; color: var(--text-secondary);
+}
+.mode-chip.on { border-color: var(--accent); color: var(--accent); background: rgba(59,130,246,.10); font-weight: 600; }
+.switch-row {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-top: 14px; padding-top: 12px; border-top: 1px dashed var(--border);
+}
+.switch-row b { font-size: 14px; display: block; }
+.switch-row small { font-size: 11.5px; color: var(--text-muted); }
+.state-line {
+  margin-top: 12px; padding: 9px 10px; border-radius: 8px;
+  background: rgba(59,130,246,.08);
+  font-size: 12px; color: var(--text-secondary); line-height: 1.6;
+}
+.keep-block { margin-top: 14px; padding-top: 12px; border-top: 1px dashed var(--border); }
+.keep-title { font-size: 14.5px; font-weight: 700; }
+.keep-hint { font-size: 11.5px; color: var(--text-muted); margin: 3px 0 8px; line-height: 1.5; }
+.keep-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 7px; }
+.keep-btn {
+  position: relative;
+  border: 1.5px solid var(--border); border-radius: 9px;
+  background: var(--bg-base); color: var(--text-secondary);
+  font-size: 12.5px; padding: 9px 0;
+}
+.keep-btn.on { border-color: var(--danger); background: var(--danger-soft); color: var(--danger); font-weight: 600; }
+.keep-btn.locked { opacity: .75; cursor: not-allowed; }
+.keep-btn small { display: block; font-size: 9px; color: var(--text-muted); line-height: 1; margin-top: 1px; }
+.keep-btn.on small { color: var(--danger); }
+.gears-input {
+  width: 100%; box-sizing: border-box; margin-top: 6px; padding: 9px 10px;
+  border: 1px solid var(--border-strong); border-radius: 8px;
+  font-size: 14px; color: var(--text-primary);
+}
 </style>

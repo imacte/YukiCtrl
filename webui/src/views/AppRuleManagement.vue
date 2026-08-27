@@ -11,6 +11,7 @@ import { getPackagesInfo } from '@/kernelsu'
 import { useSchedulerStore } from '@/stores/scheduler'
 import { fetchAppRules, saveAppRule, deleteAppRule, defaultsFor, type AppRule, type RuleType, type RuleStrength } from '@/api/appRules'
 import HelpTooltip from '@/components/HelpTooltip.vue'
+import DescLines from '@/components/DescLines.vue'
 
 const { t } = useI18n()
 const store = useSchedulerStore()
@@ -77,6 +78,56 @@ const previewValues = computed(() => {
   return defaultsFor(r.rule_type, s)
 })
 
+/* ==================== 大白话五维说明 (问题 1) ==================== */
+const TYPE_RESTRICT_DESC: [string, string, string, string, string] = [
+  '限制规则: 给指定应用"踩刹车" — 压低它允许的最高频率、提前降频。',
+  '(限制更狠) 该应用更省电、发热更小, 但动画和加载明显变慢。',
+  '(限制更松) 应用更流畅, 省电效果打折扣。',
+  '给后台工具、不常看画质的应用、纯文字类应用加限制。',
+  '后台下载器/天气/输入法建议加"轻度"限制。']
+
+const TYPE_BOOST_DESC: [string, string, string, string, string] = [
+  '加速规则: 给指定应用"踩油门" — 抬高频率上限、更早升频。',
+  '(加速更狠) 游戏更稳更顺, 发热耗电明显增加。',
+  '(加速更松) 省电一些, 重负载场景可能偶有掉帧。',
+  '给大型游戏、视频剪辑、直播推流类应用加加速。',
+  '重度游戏加"重度"加速; 网游加"中度"即可。']
+
+const STRENGTH_DESC: [string, string, string, string, string] = [
+  '规则的作用幅度。轻度约 ±5% 频率 / 10 个百分点利用率; 中度 ±10% / 20; 重度 ±20% / 35。',
+  '(选更重) 效果翻倍 — 限制更省电、加速更流畅, 副作用也更大。',
+  '(选更轻) 影响温和, 几乎无副作用但改善也小。',
+  '先从中度试起, 观察一两天再决定加重或减轻。',
+  '默认中度; 电竞重度, 工具类轻度。']
+
+const DISABLE_BURST_DESC: [string, string, string, string, string] = [
+  '开关"突发高频": 系统在检测到瞬间负载尖峰时会把频率猛拉到最高, 这个开关把它禁掉。',
+  '(开启禁用) 该应用不再瞬间拉满频率, 省电降温明显, 瞬时操作可能慢几十毫秒。',
+  '(关闭禁用) 允许突发高频, 点击响应最快, 但更容易发热。',
+  '耗电敏感的常驻应用建议开启; 游戏类一定不要开。',
+  '限制规则建议开启, 加速规则保持关闭。']
+
+const BOOST_OFFSET_DESC: [string, string, string, string, string] = [
+  '开核阈值微调 (仅加速规则生效)。负数 = 更早唤醒核心, 正数 = 更晚。',
+  '(调负) 一点小负载就唤醒核心, 跟手但费电。',
+  '(调正) 只有大负载才唤醒核心, 省电但响应略慢。',
+  '抢购、音游等需要极限响应的场景调 -3 ~ -5。',
+  '保持 0 不动即可, 绝大多数场景感知不到差别。']
+
+const FREQ_SCALE_DESC: [string, string, string, string, string] = [
+  '频率上限倍率: 1.00 = 不变; 限制规则 < 1 (压低上限), 加速规则 > 1 (抬高上限)。',
+  '(数值更大) 应用可用的最高频率更高, 更流畅也更热。',
+  '(数值更小) 频率被压住, 更凉快省电。',
+  '由类型 + 强度自动推导, 无需手算; 仅想微调时改高级自定义。',
+  '跟随上方预览值即可。']
+
+const UTIL_OFFSET_DESC: [string, string, string, string, string] = [
+  '利用率偏移: 帧平滑引擎判断"该不该提频"的灵敏度修正, 单位是百分点。',
+  '(正值) 更容易判定为"忙" → 提频更积极。',
+  '(负值) 更容易判定为"闲" → 提频更保守。',
+  '由类型 + 强度自动推导; 游戏团战掉帧时可手动加 5 试试。',
+  '保持自动预览值。']
+
 const appPickerShow = ref(false)
 const appSearchText = ref('')
 const filteredAppsForPicker = computed(() => {
@@ -115,7 +166,7 @@ const pickApp = (pkg: string) => {
         <div class="rule-meta">
           <span class="rule-tag" :class="r.rule_type">{{ typeLabel(r.rule_type) }}</span>
           <span class="rule-tag">{{ strengthLabel(r.strength) }}</span>
-          <span v-if="r.disable_burst" class="rule-tag">burst off</span>
+          <span v-if="r.disable_burst" class="rule-tag">禁突发</span>
         </div>
       </div>
     </div>
@@ -148,7 +199,9 @@ const pickApp = (pkg: string) => {
             <van-radio name="restrict">{{ t('rule_type_restrict') }}</van-radio>
             <van-radio name="boost" style="margin-left: 12px;">{{ t('rule_type_boost') }}</van-radio>
           </van-radio-group>
-          <div class="hint">{{ t('rule_type_' + editingRule.rule_type + '_desc') }}</div>
+          <div style="margin-top: 10px;">
+            <DescLines :desc="editingRule.rule_type === 'restrict' ? TYPE_RESTRICT_DESC : TYPE_BOOST_DESC" />
+          </div>
         </div>
 
         <div class="card">
@@ -158,21 +211,24 @@ const pickApp = (pkg: string) => {
             <van-radio name="medium" style="margin-left: 12px;">{{ t('rule_strength_medium') }}</van-radio>
             <van-radio name="heavy" style="margin-left: 12px;">{{ t('rule_strength_heavy') }}</van-radio>
           </van-radio-group>
+          <div style="margin-top: 10px;">
+            <DescLines :desc="STRENGTH_DESC" />
+          </div>
         </div>
 
         <div class="card">
           <div class="card-title">{{ t('auto_derived_preview') }}</div>
           <div class="config-row">
             <div class="row-text">
-              <span>{{ t('preview_max_freq_scale') }}</span>
-              <HelpTooltip :text="t('preview_max_freq_scale_desc')" />
+              <span>频率上限倍率</span>
+              <HelpTooltip title="频率上限倍率" :list="FREQ_SCALE_DESC" />
             </div>
             <span class="val">{{ previewValues.max_freq_scale.toFixed(2) }}</span>
           </div>
           <div class="config-row">
             <div class="row-text">
-              <span>{{ t('preview_target_util_offset') }}</span>
-              <HelpTooltip :text="t('preview_target_util_offset_desc')" />
+              <span>利用率偏移</span>
+              <HelpTooltip title="利用率偏移" :list="UTIL_OFFSET_DESC" />
             </div>
             <span class="val">{{ editingRule.target_util_offset ?? previewValues.target_util_offset }}</span>
           </div>
@@ -182,15 +238,15 @@ const pickApp = (pkg: string) => {
           <div class="card-title">{{ t('advanced_options') }}</div>
           <div class="config-row">
             <div class="row-text">
-              <span>{{ t('disable_burst') }}</span>
-              <HelpTooltip :text="t('disable_burst_desc')" />
+              <span>禁用突发高频</span>
+              <HelpTooltip title="禁用突发高频" :list="DISABLE_BURST_DESC" />
             </div>
             <van-switch v-model="editingRule.disable_burst" />
           </div>
           <div class="config-row">
             <div class="row-text">
-              <span>{{ t('boost_threshold_offset') }}</span>
-              <HelpTooltip :text="t('boost_threshold_offset_desc')" />
+              <span>开核阈值微调</span>
+              <HelpTooltip title="开核阈值微调" :list="BOOST_OFFSET_DESC" />
             </div>
             <van-stepper v-model="editingRule.boost_threshold_offset" :min="-10" :max="10" :step="1" />
           </div>

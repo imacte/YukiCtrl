@@ -20,6 +20,17 @@ const PATHS = {
 
 const isDev = import.meta.env.DEV || typeof window.ksu === 'undefined';
 
+/** UTF-8 安全的 base64 (writeFile 专用; btoa 原生不支持中文) */
+function toBase64Utf8(s: string): string {
+  const bytes = new TextEncoder().encode(s);
+  let bin = '';
+  const CHUNK = 0x8000; // 分块避免 String.fromCharCode 参数上限
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(bin);
+}
+
 const RealBridge = {
   async isDaemonRunning(): Promise<boolean> {
     try {
@@ -36,8 +47,12 @@ const RealBridge = {
     return stdout;
   },
   async writeFile(path: string, content: string): Promise<void> {
-    const escapedContent = content.replace(/"/g, '\\"');
-    const { errno } = await exec(`echo "${escapedContent}" > "${path}"`);
+    // 旧实现 echo "..." 双引号转义: 内容含反引号 / $ / 反斜杠时会被 shell 展开,
+    // 导致写坏 yaml (保存后 daemon 解析失败 = "保存无效"). 改为 base64 通道:
+    //   echo <b64> | base64 -d > file
+    // base64 字母表无 shell 元字符, UTF-8 中文安全, 任何内容原样落盘.
+    const b64 = toBase64Utf8(content);
+    const { errno } = await exec(`echo ${b64} | base64 -d > "${path}"`);
     if (errno !== 0) throw new Error(i18n.global.t('write_failed', { path }) as string);
   },
 

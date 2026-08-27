@@ -16,6 +16,8 @@ import { useSchedulerStore } from '@/stores/scheduler'
 import { fetchSenseSnapshot, type SenseResult } from '@/api/sense'
 import { Bridge } from '@/utils/bridge'
 import { fetchHotplugState, maskToCpuArray, type HotplugState } from '@/api/hotplug'
+import HelpTooltip from '@/components/HelpTooltip.vue'
+import { MODE_HELP } from '@/config/moduleSpecs'
 
 const router = useRouter()
 const store = useSchedulerStore()
@@ -171,7 +173,11 @@ const ageColor = computed(() => {
       </div>
     </div>
 
-    <!-- 1. 模式切换 -->
+    <!-- 1. 模式切换 (带五维说明, 问题 1) -->
+    <div class="section-row">
+      <span class="section-title">调度模式</span>
+      <HelpTooltip title="调度模式" :list="MODE_HELP[currentMode] ?? MODE_HELP['balance']" />
+    </div>
     <div class="mode-grid">
       <button v-for="m in modes" :key="m.key" class="mode-btn"
         :class="{ active: m.key === currentMode }"
@@ -208,7 +214,7 @@ const ageColor = computed(() => {
     <!-- 3. 八路感知 -->
     <div class="grid2">
       <div class="card metric-card">
-        <div class="metric-label">SoC 温度</div>
+        <div class="metric-label">芯片温度</div>
         <div class="metric-value" :style="{ color: tempColor }">{{ tempText }}<span class="unit">℃</span></div>
       </div>
       <div class="card metric-card">
@@ -224,7 +230,7 @@ const ageColor = computed(() => {
         <div class="metric-label">内存压力</div>
         <div class="metric-value sm">{{ memPct }}<span class="unit">%</span></div>
         <div class="bar-h"><i :style="{ width: memPct + '%', background: barColor(memPct) }"></i></div>
-        <div class="metric-sub">Swap {{ swapMb }} MB</div>
+        <div class="metric-sub">交换 {{ swapMb }} MB</div>
       </div>
 
       <div class="card metric-card">
@@ -271,6 +277,17 @@ const ageColor = computed(() => {
 .card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 14px; padding: 14px; margin-bottom: 12px; }
 .metric-card { margin-bottom: 0; min-height: 92px; display: flex; flex-direction: column; }
 
+.section-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 4px 8px;
+}
+.section-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-secondary);
+}
 .mode-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-bottom: 12px; }
 .mode-btn { border: 2px solid var(--border); background: var(--bg-base); border-radius: 12px; padding: 13px 6px 11px; display: flex; flex-direction: column; align-items: center; gap: 4px; transition: transform .1s; color: var(--text-muted); }
 .mode-btn:active { transform: scale(.96); }
