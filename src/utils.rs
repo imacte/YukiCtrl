@@ -23,10 +23,40 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write, Seek, SeekFrom};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
 use nix::unistd::{access, AccessFlags};
 
 use crate::i18n::t_with_args;
 use crate::fluent_args;
+
+/// 全局 sysfs 在线核位图 (bit N = cpu N online?), 由 hotplug 对账循环每 tick 更新,
+/// CLG / modules_ctrl 等消费方零成本读取, 用于跳过全离线 policy 的写入.
+pub static SYSFS_ONLINE_MASK: AtomicU32 = AtomicU32::new(0xFF);
+
+#[inline]
+pub fn is_cpu_online(cpu: usize) -> bool {
+    SYSFS_ONLINE_MASK.load(Ordering::Relaxed) & (1u32 << cpu) != 0
+}
+
+#[inline]
+pub fn set_online_mask(mask: u32) {
+    SYSFS_ONLINE_MASK.store(mask, Ordering::Relaxed);
+}
+
+/// 触摸加速配置全局快照 (enabled, extra_cores, duration_ms).
+/// 生产者: scheduler 启动 / config 热重载 / 屏幕状态切换 (modules_ctrl::update_touch_global)
+/// 消费者: hotplug 200ms tick (touch_down gate + 保护窗 + 额外唤醒核过滤)
+pub static GLOBAL_TOUCH_CFG: std::sync::RwLock<(bool, u32, i64)> =
+    std::sync::RwLock::new((true, 8, 200));
+
+pub fn touch_cfg_snapshot() -> (bool, u32, i64) {
+    *GLOBAL_TOUCH_CFG.read().unwrap_or_else(|e| e.into_inner())
+}
+
+pub fn set_touch_cfg_snapshot(v: (bool, u32, i64)) {
+    let mut g = GLOBAL_TOUCH_CFG.write().unwrap_or_else(|e| e.into_inner());
+    *g = v;
+}
 
 /// 向文件写入内容，并处理可能的错误
 pub fn write_to_file<P: AsRef<Path>, C: AsRef<[u8]>>(path: P, content: C) -> Result<()> {

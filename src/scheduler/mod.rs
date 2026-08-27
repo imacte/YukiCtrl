@@ -28,6 +28,8 @@ pub mod cpu_load_governor;
 pub mod hotplug;
 // Phase 2 / ticket-07: App 规则引擎 (按前台包名施加调度偏置)
 pub mod app_rule;
+// 全模块亮/息屏双套配置的应用层 (modules.*)
+pub mod modules_ctrl;
 // 任务 #5 / ticket-09: sense snapshot 写盘器 (供 WebUI 轮询)
 // 注意: sensor 是顶层模块 (src/sensor/), 这里 use 而非 pub mod.
 use crate::sensor::start_sense_snapshot_thread;
@@ -116,14 +118,27 @@ pub fn start_scheduler_thread(rx: mpsc::Receiver<DaemonEvent>) -> Result<()> {
     let config = Config::from_file(config_path.to_str().unwrap()).unwrap_or_default();
 
     let shared_config = Arc::new(RwLock::new(config));
-    let shared_mode_name = Arc::new(Mutex::new("balance".to_string())); 
+    let shared_mode_name = Arc::new(Mutex::new("balance".to_string()));
     let sys_path_exist = Arc::new(utils::SysPathExist::new());
+    // 屏幕状态共享 (gpu_boost 线程 / config watcher / modules 应用层共用);
+    // 初始按亮屏处理 (保守方向, 与 scheduler_ipc 的 is_screen_on 初值一致).
+    let screen_shared: Arc<RwLock<bool>> = Arc::new(RwLock::new(true));
+
+    // 全模块双套配置: 启动时应用亮屏套 (含触摸配置推送全局快照)
+    {
+        let cfg_lock = shared_config.read().unwrap();
+        modules_ctrl::apply_screen_scoped(&cfg_lock.modules, true);
+        modules_ctrl::update_touch_global(&cfg_lock, true);
+    }
+    // GPU 加速线程 (boost_util_pct 驱动; 关闭时静默空转)
+    modules_ctrl::spawn_gpu_boost_thread(shared_config.clone(), screen_shared.clone());
 
     // ==========================================
     // Config Watcher 线程
     // ==========================================
     let config_clone = shared_config.clone();
     let sys_path_clone = sys_path_exist.clone();
+    let screen_for_watcher = screen_shared.clone();
     
     thread::Builder::new()
         .name("config_watcher".to_string())
@@ -143,11 +158,19 @@ pub fn start_scheduler_thread(rx: mpsc::Receiver<DaemonEvent>) -> Result<()> {
                     Ok(new_config) => {
                         logger::update_level(&new_config.meta.loglevel);
                         *config_clone.write().unwrap() = new_config;
-                        
+
                         let new_lang = config_clone.read().unwrap().meta.language.clone();
                         if old_lang != new_lang { load_language(&new_lang); }
 
                         log::info!("{}", t("config-reloaded-success"));
+
+                        // 全模块双套配置热重载: 按当前屏幕状态重新应用
+                        {
+                            let screen_on = *screen_for_watcher.read().unwrap();
+                            let cfg_lock = config_clone.read().unwrap();
+                            modules_ctrl::apply_screen_scoped(&cfg_lock.modules, screen_on);
+                            modules_ctrl::update_touch_global(&cfg_lock, screen_on);
+                        }
 
                         let scheduler = CpuScheduler::new(config_clone.clone(), sys_path_clone.clone());
                         if let Err(e) = scheduler.apply_system_tweaks() {
@@ -194,6 +217,7 @@ pub fn start_scheduler_thread(rx: mpsc::Receiver<DaemonEvent>) -> Result<()> {
     // ==========================================
     let config_clone = shared_config.clone();
     let mode_clone = shared_mode_name.clone();
+    let screen_for_ipc = screen_shared.clone();
 
     thread::Builder::new()
         .name("scheduler_ipc".to_string())
@@ -239,6 +263,10 @@ pub fn start_scheduler_thread(rx: mpsc::Receiver<DaemonEvent>) -> Result<()> {
                         log::info!("{}", t_with_args("scheduler-clg-init", &fluent_args!("mode" => current_mode.clone())));
                     }
                 }
+                // 需求: 启动默认亮屏 — 应用亮屏套帧参数
+                let config_lock = config_clone.read().unwrap();
+                let f = config_lock.modules.frame.pick(true);
+                fas_controller.set_frame_params(f.jank_margin_ms, f.boost_enabled, f.boost_strength);
             }
 
             // Phase 2 / ticket-07-fix: 共享的 "应用 App 规则偏置" 流程.
@@ -280,6 +308,24 @@ pub fn start_scheduler_thread(rx: mpsc::Receiver<DaemonEvent>) -> Result<()> {
                     // --- 1. 屏幕状态事件 (息屏深度睡眠) ---
                     DaemonEvent::ScreenStateChange(screen_on) => {
                         is_screen_on = screen_on;
+
+                        // 全模块亮/息屏双套配置: 切换到对应套 (gpu/swap/io 写 sysfs;
+                        // frame 由 FAS set_frame_params 消费; touch 推送全局快照)
+                        //
+                        // 锁序约束 (防死锁): 全进程统一 "先 config 后 screen".
+                        // 此处必须先做 config 读锁内的 apply, 再更新 screen 写锁 —
+                        // 若反过来 (screen 写锁内等 config 读锁), 会与 config watcher
+                        // (config 写锁 → screen 读锁) 形成环, 真机观测整进程僵死.
+                        {
+                            let cfg_lock = config_clone.read().unwrap();
+                            modules_ctrl::apply_screen_scoped(&cfg_lock.modules, screen_on);
+                            modules_ctrl::update_touch_global(&cfg_lock, screen_on);
+                            let f = cfg_lock.modules.frame.pick(screen_on);
+                            fas_controller.set_frame_params(
+                                f.jank_margin_ms, f.boost_enabled, f.boost_strength);
+                        }
+                        *screen_for_ipc.write().unwrap() = screen_on;
+
                         let current_mode = mode_clone.lock().unwrap().clone();
 
                         if !is_screen_on {
@@ -380,6 +426,12 @@ pub fn start_scheduler_thread(rx: mpsc::Receiver<DaemonEvent>) -> Result<()> {
                                 fas_controller.set_game(pid, &package_name);
                                 fas_controller.set_temperature(temperature);
                                 fas_controller.set_temp_threshold(current_rules.fas_rules.core_temp_threshold);
+                                // 需求: 进游戏接管时应用当前屏幕状态的帧参数套
+                                if is_screen_on {
+                                    let config_lock = config_clone.read().unwrap();
+                                    let f = config_lock.modules.frame.pick(true);
+                                    fas_controller.set_frame_params(f.jank_margin_ms, f.boost_enabled, f.boost_strength);
+                                }
                             } else {
                                 // 退游戏：尝试挂起 FAS，并激活普通模式
                                 if fas_suspended_at.is_some() {

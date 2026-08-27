@@ -114,6 +114,21 @@ fn read_sysfs_online() -> Option<Vec<u32>> {
     Some(parse_online_list(&s))
 }
 
+/// 节流日志 (10s): 温度软阈值预警等周期性事件用, 防刷屏
+fn warn_throttle(msg: &str) {
+    use std::sync::atomic::{AtomicI64, Ordering};
+    static LAST_WARN_MS: AtomicI64 = AtomicI64::new(0);
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let last = LAST_WARN_MS.load(Ordering::Relaxed);
+    if now_ms.saturating_sub(last) >= 10_000 {
+        LAST_WARN_MS.store(now_ms, Ordering::Relaxed);
+        log::warn!("{}", msg);
+    }
+}
+
 fn hotplug_dir() -> PathBuf { common::get_module_root().join(HOTPLUG_DIR) }
 fn config_path() -> PathBuf { hotplug_dir().join(CONFIG_FILE) }
 fn state_path() -> PathBuf { hotplug_dir().join(STATE_FILE) }
@@ -181,6 +196,20 @@ struct KeepCoresConfig {
     screen_off: Vec<u32>,
 }
 
+/// 需求: 温度保护亮/息屏双套 (软阈值=预警, 硬阈值=强制全核).
+/// hard_c <= 0 表示未配置 → 回落旧字段 thermal_force_all_on_c (兼容).
+#[derive(Debug, Clone, Copy, Default)]
+struct TempScreenCfg {
+    soft_c: f32,
+    hard_c: f32,
+}
+
+impl TempScreenCfg {
+    fn pick(on: &TempScreenCfg, off: &TempScreenCfg, screen_on: bool) -> TempScreenCfg {
+        if screen_on { *on } else { *off }
+    }
+}
+
 impl Default for KeepCoresConfig {
     fn default() -> Self {
         Self {
@@ -201,19 +230,23 @@ fn parse_cores(v: &str) -> Vec<u32> {
         .collect()
 }
 
-fn load_config() -> (HotplugToggles, HotplugThresholds, KeepCoresConfig) {
+fn load_config() -> (HotplugToggles, HotplugThresholds, KeepCoresConfig, TempScreenCfg, TempScreenCfg) {
     let path = config_path();
     let content = match fs::read_to_string(&path) {
         Ok(s) => s,
         Err(e) => {
             debug!("hotplug config not loaded ({}), using defaults", e);
-            return (HotplugToggles::default(), HotplugThresholds::default(), KeepCoresConfig::default());
+            return (HotplugToggles::default(), HotplugThresholds::default(), KeepCoresConfig::default(),
+                    TempScreenCfg::default(), TempScreenCfg::default());
         }
     };
 
     let mut toggles = HotplugToggles::default();
     let mut thresholds = HotplugThresholds::default();
     let mut keep = KeepCoresConfig::default();
+    // 需求: 温度双套 (temp_on_soft_c / temp_on_hard_c / temp_off_soft_c / temp_off_hard_c)
+    let mut temp_on = TempScreenCfg::default();
+    let mut temp_off = TempScreenCfg::default();
     for line in content.lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') { continue; }
@@ -236,6 +269,11 @@ fn load_config() -> (HotplugToggles, HotplugThresholds, KeepCoresConfig) {
                 "thermal_force_all_on_c" => {
                     if let Ok(x) = v.parse::<f32>() { thresholds.thermal_force_all_on_c = x.clamp(45.0, 95.0); }
                 }
+                // 需求: 温度双套 (亮/息屏 soft/hard)
+                "temp_on_soft_c" => { if let Ok(x) = v.parse::<f32>() { temp_on.soft_c = x.clamp(35.0, 95.0); } }
+                "temp_on_hard_c" => { if let Ok(x) = v.parse::<f32>() { temp_on.hard_c = x.clamp(45.0, 100.0); } }
+                "temp_off_soft_c" => { if let Ok(x) = v.parse::<f32>() { temp_off.soft_c = x.clamp(35.0, 95.0); } }
+                "temp_off_hard_c" => { if let Ok(x) = v.parse::<f32>() { temp_off.hard_c = x.clamp(45.0, 100.0); } }
                 "screen_on_keep_cores" => {
                     let cores = parse_cores(v);
                     if !cores.is_empty() { keep.screen_on = cores; }
@@ -248,7 +286,7 @@ fn load_config() -> (HotplugToggles, HotplugThresholds, KeepCoresConfig) {
             }
         }
     }
-    (toggles, thresholds, keep)
+    (toggles, thresholds, keep, temp_on, temp_off)
 }
 
 fn parse_bool(s: &str) -> bool {
@@ -408,7 +446,7 @@ fn verify_online(cpu_id: u32, expected: bool) -> bool {
 }
 
 fn run_one_tick(state: &mut HotplugLoopState) -> Result<()> {
-    let (toggles, mut thresholds, keep_cfg) = load_config();
+    let (toggles, mut thresholds, keep_cfg, temp_on, temp_off) = load_config();
 
     let snap = idle_snapshot_now();
     if snap.is_empty() {
@@ -423,6 +461,18 @@ fn run_one_tick(state: &mut HotplugLoopState) -> Result<()> {
     let loads = snapshot_to_loads(&snap);
     let thermal_c = read_thermal_c();
 
+    // 需求: 温度双套 — 按屏幕状态选 hard 线 (新字段优先, 未配置回落旧字段);
+    // soft 线超限 (且未达 hard) 记预警日志 (10s 节流).
+    let temp_sel = TempScreenCfg::pick(&temp_on, &temp_off, screen_on);
+    if temp_sel.hard_c > 0.0 {
+        thresholds.thermal_force_all_on_c = temp_sel.hard_c;
+    }
+    if temp_sel.soft_c > 0.0 && thermal_c >= temp_sel.soft_c && thermal_c < thresholds.thermal_force_all_on_c {
+        warn_throttle(&format!(
+            "hotplug: thermal soft warning {:.1}C >= {:.1}C (hard={:.1}C)",
+            thermal_c, temp_sel.soft_c, thresholds.thermal_force_all_on_c));
+    }
+
     // 任务 A 配套修复 (真机实测): 灭屏瞬间 FPS 监控会把"没有帧"判成丢帧,
     // fas_panic 旁路随即强制全核在线, 与刚切小的息屏白名单互相拉扯,
     // 形成 disable→enable 振荡. 灭屏时 FAS 主循环本来就挂起
@@ -430,8 +480,11 @@ fn run_one_tick(state: &mut HotplugLoopState) -> Result<()> {
     let fas_panic_now = screen_on && fas::is_fas_panic();
     let enabled = toggles.lockscreen_onoff && toggles.screens_onoff;
 
-    // 漏洞 1: 读全局触摸信号 (灭屏时触摸旁路同样不生效, 防止误触发全开)
-    let touch_down = screen_on && touch_signal::is_touch_down();
+    // 漏洞 1 + 需求: 触摸加速可配置 (modules.touch.{on,off} 经全局快照):
+    // enabled=false 关旁路; duration_ms 由 threshold 运行期原子量承接;
+    // extra_cores 在 decision 后过滤非白名单核的唤醒配额.
+    let (touch_enabled, touch_extra, _touch_ms) = crate::utils::touch_cfg_snapshot();
+    let touch_down = screen_on && touch_enabled && touch_signal::is_touch_down();
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
@@ -485,6 +538,10 @@ fn run_one_tick(state: &mut HotplugLoopState) -> Result<()> {
     // 对账后: 白名单内核被外部关掉 → 下一 tick 立即进 to_enable (200-400ms 回线);
     // mark_online_at(false) 打点 disabled_at 不会挡白名单分支 (它 bypass cooldown).
     if let Some(actual_online) = read_sysfs_online() {
+        // 同步全局在线位图 (CLG 等消费方跳过全离线 policy 的频率写入)
+        let mut mask = 0u32;
+        for &c in &actual_online { mask |= 1u32 << c; }
+        crate::utils::set_online_mask(mask);
         for cpu in 0..=threshold::MAX_CPU_ID {
             let is_on = actual_online.contains(&cpu);
             if decider.is_cpu_online_view(cpu) != is_on {
@@ -494,7 +551,25 @@ fn run_one_tick(state: &mut HotplugLoopState) -> Result<()> {
         }
     }
 
-    let decision = decider.tick(&loads, thermal_c, fas_panic_now, enabled, touch_down, now_ms);
+    let mut decision = decider.tick(&loads, thermal_c, fas_panic_now, enabled, touch_down, now_ms);
+
+    // 需求: 触摸额外唤醒核配额 — extra_cores < 8 时, 非白名单核只保留
+    // id 最大的 extra_cores 个 (大核优先), 白名单核不受限.
+    if touch_down && touch_extra < 8 {
+        let mut quota = touch_extra;
+        let mut sorted: Vec<u32> = decision.to_enable.clone();
+        sorted.sort_unstable_by(|a, b| b.cmp(a)); // 大核优先分配配额
+        let mut keep = std::collections::HashSet::new();
+        for &c in &sorted {
+            if decider.allow_list().is_protected(c) {
+                keep.insert(c);
+            } else if quota > 0 {
+                quota -= 1;
+                keep.insert(c);
+            }
+        }
+        decision.to_enable.retain(|&c| keep.contains(&c));
+    }
 
     // Bug 1 彻底修复: decider.tick() 不再改 entry.online (collect-only).
     // 写成功才调 decider.mark_online, 写失败什么都不动 (entry.online 保持决策前真实状态)

@@ -4,7 +4,7 @@ import yaml from 'js-yaml'
 import { Bridge } from '@/utils/bridge'
 import { useI18n } from 'vue-i18n'
 import { saveHotplugConfig } from '@/api/hotplug'
-import { CLG_MODE_DEFAULTS, FREQ_LIMIT_DEFAULTS, HOTPLUG_DEFAULTS, IO_DEFAULTS, FAS_DEFAULTS } from '@/config/moduleSpecs'
+import { CLG_MODE_DEFAULTS, FREQ_LIMIT_DEFAULTS, HOTPLUG_DEFAULTS, IO_DEFAULTS, FAS_DEFAULTS, MODULE_SCOPED_DEFAULTS } from '@/config/moduleSpecs'
 import ResetDefaultsBtn from '@/components/ResetDefaultsBtn.vue'
 
 const { t } = useI18n()
@@ -38,7 +38,7 @@ const fetchLog = async () => {
  */
 const resetAllDefaults = async () => {
   try {
-    // 1. config.yaml — 四档位 + 频率护栏 + 读写
+    // 1. config.yaml — 四档位 + 频率护栏 + 读写 + 全模块亮/息屏双套 (modules.*)
     const mainCfg: any = await Bridge.getMainConfig()
     for (const [mode, defs] of Object.entries(CLG_MODE_DEFAULTS)) {
       if (!mainCfg[mode]) mainCfg[mode] = {}
@@ -50,10 +50,20 @@ const resetAllDefaults = async () => {
     for (const [k, v] of Object.entries(IO_DEFAULTS)) mainCfg.IO_Settings[k] = v
     if (!mainCfg.function) mainCfg.function = {}
     mainCfg.function.IOOptimization = true
+    if (!mainCfg.modules) mainCfg.modules = {}
+    for (const [mk, scopes] of Object.entries(MODULE_SCOPED_DEFAULTS)) {
+      if (mk === 'temp') continue // temp 双套在 hotplug/config.yaml, 见下
+      if (!mainCfg.modules[mk]) mainCfg.modules[mk] = {}
+      for (const [sc, kv] of Object.entries(scopes)) {
+        if (!mainCfg.modules[mk][sc]) mainCfg.modules[mk][sc] = {}
+        for (const [k, v] of Object.entries(kv)) mainCfg.modules[mk][sc][k] = v
+      }
+    }
     await Bridge.saveMainConfig(yaml.load(yaml.dump(mainCfg)))
 
-    // 2. hotplug/config.yaml — 核心开关全量默认
-    await saveHotplugConfig(JSON.parse(JSON.stringify(HOTPLUG_DEFAULTS)))
+    // 2. hotplug/config.yaml — 核心开关全量默认 (含温度双套)
+    const hpDefault = JSON.parse(JSON.stringify(HOTPLUG_DEFAULTS))
+    await saveHotplugConfig(hpDefault)
 
     // 3. rules.yaml fas_rules — 帧平滑参数 (保留 per_app_profiles 与 app_modes)
     const rulesCfg: any = await Bridge.getRulesConfig()

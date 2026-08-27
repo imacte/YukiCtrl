@@ -7,10 +7,11 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useSchedulerStore } from '@/stores/scheduler'
 import { Bridge } from '@/utils/bridge'
-import { FAS_PARAMS, FAS_GEARS_DESC, MODE_NAMES, FAS_DEFAULTS } from '@/config/moduleSpecs'
+import { FAS_PARAMS, FAS_GEARS_DESC, MODE_NAMES, FAS_DEFAULTS, FRAME_MODULE_PARAMS } from '@/config/moduleSpecs'
 import ParamRow from '@/components/ParamRow.vue'
 import DescLines from '@/components/DescLines.vue'
 import ResetDefaultsBtn from '@/components/ResetDefaultsBtn.vue'
+import ScreenScopedModule from '@/components/ScreenScopedModule.vue'
 
 const router = useRouter()
 const store = useSchedulerStore()
@@ -128,7 +129,9 @@ const fasOnlyHint = computed(() =>
           @update="(v) => { setFas(p.path, v); persistFas() }"
         />
 
-        <ResetDefaultsBtn @reset="resetModuleDefaults" />
+        <ScreenScopedModule module-key="frame" :params="FRAME_MODULE_PARAMS" />
+
+        <ResetDefaultsBtn label="恢复基础参数默认值" @reset="resetModuleDefaults" />
       </section>
     </div>
   </div>

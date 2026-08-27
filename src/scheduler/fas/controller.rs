@@ -120,6 +120,14 @@ pub struct FasController {
     pub(super) post_jank_perf_floor: f32,
     pub(super) post_jank_guard_frames: u32,
 
+    // ─── 需求: 亮/息屏双套帧参数 (set_frame_params) ───
+    /// 掉帧提频总开关 (modules.frame.{screen_on,screen_off}.boost_enabled)
+    pub(super) frame_boost_enabled: bool,
+    /// 提频强度缩放 0..=2 (1.0 = 标准幅度; 缩放 cfg.downgrade_boost_perf_inc)
+    pub(super) frame_boost_strength: f32,
+    /// 首次 set_frame_params 时记录的 boost 增量基准 (未缩放值)
+    pub(super) frame_boost_base_inc: Option<f32>,
+
     // [动态 PID] 基于 CPU 利用率的 target_fps 偏移
     // 范围 [-3.0, 0.0]：当 CPU 利用率持续偏低时逐步降低有效 target_fps，
     // 让 PID 少给频率，节省功耗；利用率回升时逐步恢复
@@ -176,6 +184,9 @@ impl FasController {
             target_pressure: 60.0,        // balance default
             ema_pressure_index: 0.0,
             last_frame_drop_active: false,
+            frame_boost_enabled: true,
+            frame_boost_strength: 1.0,
+            frame_boost_base_inc: None,
             post_jank_perf_floor: 0.0,
             post_jank_guard_frames: 0,
             target_fps_offset: 0.0,
@@ -357,6 +368,34 @@ impl FasController {
     // ════════════════════════════════════════════════════════════
     //  Phase 2 / ticket-06: 综合压力指数
     // ════════════════════════════════════════════════════════════
+
+    /// 需求: 亮/息屏双套帧参数 — 由 scheduler 在屏幕状态切换与 config 热重载时调用.
+    ///
+    /// - `jank_margin_ms`: 帧时间超出预算多少 ms 判掉帧 → 换算为 fps_margin
+    ///   (帧数 = ms × 当前目标帧率 / 1000, clamp 0.5..=10)
+    /// - `boost_enabled`: 掉帧提频总开关 (false 时降档 boost 不再触发, 在途 boost 立即撤销)
+    /// - `boost_strength`: 0..=2, 相对基准 (首次调用时的配置值) 缩放提频增量
+    pub fn set_frame_params(&mut self, jank_margin_ms: f32, boost_enabled: bool, boost_strength: f32) {
+        let margin_frames = (jank_margin_ms.max(0.5) * self.current_target_fps / 1000.0)
+            .clamp(0.5, 10.0);
+        self.fps_margin = margin_frames;
+        self.frame_boost_enabled = boost_enabled;
+        self.frame_boost_strength = boost_strength.clamp(0.0, 2.0);
+        if self.frame_boost_base_inc.is_none() {
+            self.frame_boost_base_inc = Some(self.cfg.downgrade_boost_perf_inc);
+        }
+        if let Some(base) = self.frame_boost_base_inc {
+            self.cfg.downgrade_boost_perf_inc = base * self.frame_boost_strength;
+        }
+        if !boost_enabled {
+            self.downgrade_boost_active = false;
+            self.downgrade_boost_remaining = 0;
+        }
+        debug!(
+            "[fas] frame params: jank={:.1}ms(margin={:.1}f) boost={} strength={:.2}",
+            jank_margin_ms, margin_frames, boost_enabled, self.frame_boost_strength
+        );
+    }
 
     /// 设置当前模式的 target_pressure (0..=100).
     /// 由 `scheduler::mod.rs::DaemonEvent::ModeChange` 在模式切换时调用.

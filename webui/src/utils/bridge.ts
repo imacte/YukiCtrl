@@ -33,9 +33,14 @@ function toBase64Utf8(s: string): string {
 
 const RealBridge = {
   async isDaemonRunning(): Promise<boolean> {
+    // 修复: 进程名是 yumi (模块目录叫 core-pilot, 但二进制/进程名一直是 yumi).
+    // 旧代码 pidof core-pilot 永远失败 → 首页恒显示"守护进程未响应"误报.
+    // 兼容两种名字, 任一命中即视为运行.
     try {
-      const { errno, stdout } = await exec(`pidof core-pilot`);
-      return errno === 0 && stdout.trim().length > 0;
+      const { errno, stdout } = await exec(`pidof yumi`);
+      if (errno === 0 && stdout.trim().length > 0) return true;
+      const r2 = await exec(`pidof core-pilot`);
+      return r2.errno === 0 && r2.stdout.trim().length > 0;
     } catch (e) {
       return false;
     }

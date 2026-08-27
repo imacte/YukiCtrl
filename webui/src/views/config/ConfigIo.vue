@@ -8,7 +8,7 @@ import { useRouter } from 'vue-router'
 import yaml from 'js-yaml'
 import { useSchedulerStore } from '@/stores/scheduler'
 import { Bridge } from '@/utils/bridge'
-import { IO_PARAMS, IO_OPT_DESC, IO_DEFAULTS } from '@/config/moduleSpecs'
+import { IO_PARAMS, IO_OPT_DESC, IO_DEFAULTS, IO_OFF_PARAMS, MODULE_SCOPED_DEFAULTS } from '@/config/moduleSpecs'
 import ParamRow from '@/components/ParamRow.vue'
 import DescLines from '@/components/DescLines.vue'
 import ResetDefaultsBtn from '@/components/ResetDefaultsBtn.vue'
@@ -54,14 +54,26 @@ function persistMain() {
   }, 600)
 }
 
-/** 恢复本模块默认: 读写三参数 + 总开关 (值必须保持字符串) */
+/** 恢复本模块默认: 读写三参数 + 总开关 (值必须保持字符串) + 息屏套 */
 function resetModuleDefaults() {
   if (!mainCfg.value) return
   if (!mainCfg.value.IO_Settings) mainCfg.value.IO_Settings = {}
   for (const [k, v] of Object.entries(IO_DEFAULTS)) mainCfg.value.IO_Settings[k] = v
   setP('function.IOOptimization', true)
+  if (!mainCfg.value.modules) mainCfg.value.modules = {}
+  if (!mainCfg.value.modules.io) mainCfg.value.modules.io = {}
+  if (!mainCfg.value.modules.io.screen_off) mainCfg.value.modules.io.screen_off = {}
+  for (const [k, v] of Object.entries(MODULE_SCOPED_DEFAULTS.io.screen_off)) {
+    mainCfg.value.modules.io.screen_off[k] = v
+  }
   persistMain()
 }
+
+/** 息屏套读写 (modules.io.screen_off.*) */
+function offVal(p: { path: string; fb?: string }) {
+  return getP('modules.io.screen_off.' + p.path) ?? MODULE_SCOPED_DEFAULTS.io.screen_off[p.path] ?? p.fb
+}
+function offUpd(p: { path: string }, v: unknown) { setP('modules.io.screen_off.' + p.path, v); persistMain() }
 
 onMounted(async () => {
   try { mainCfg.value = await Bridge.getMainConfig() }
@@ -100,8 +112,23 @@ onUnmounted(() => { if (saveTimer !== null) window.clearTimeout(saveTimer) })
           @update="(v) => { setP(p.path, v); persistMain() }"
         />
 
+        <div class="off-section">
+          <div class="off-title">息屏时 (独立记忆)</div>
+          <p class="cfg-intro">黑屏待机时自动切换到这套值; 亮屏恢复上方设置。</p>
+          <ParamRow
+            v-for="p in IO_OFF_PARAMS" :key="'off-' + p.path"
+            :spec="p" :value="offVal(p)"
+            @update="(v) => offUpd(p, v)"
+          />
+        </div>
+
         <ResetDefaultsBtn @reset="resetModuleDefaults" />
       </section>
     </div>
   </div>
 </template>
+
+<style scoped>
+.off-section { margin-top: 18px; padding-top: 14px; border-top: 1px dashed var(--border); }
+.off-title { font-size: 14px; font-weight: 700; color: var(--accent); margin-bottom: 2px; }
+</style>

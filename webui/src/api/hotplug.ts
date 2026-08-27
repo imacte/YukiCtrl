@@ -44,6 +44,11 @@ export interface HotplugConfig {
   screen_on_keep_cores: number[]
   /** 息屏时永不关闭的核心 */
   screen_off_keep_cores: number[]
+  /** 需求: 温度双套 (temp_{on,off}_{soft,hard}_c); hard<=0 时 daemon 回落 thermal_force_all_on_c */
+  temp_on_soft_c: number
+  temp_on_hard_c: number
+  temp_off_soft_c: number
+  temp_off_hard_c: number
 }
 
 /** 兜底安全约束与 daemon 一致: cpu0 恒保留; 有效保护核 < 2 时自动补 cpu1 */
@@ -97,6 +102,10 @@ export async function saveHotplugConfig(cfg: HotplugConfig): Promise<void> {
     `on_threshold_util_pct: ${cfg.on_threshold_util_pct}\n` +
     `min_online_cores: ${Math.max(2, Math.min(8, Math.round(cfg.min_online_cores)))}\n` +
     `thermal_force_all_on_c: ${cfg.thermal_force_all_on_c}\n` +
+    `temp_on_soft_c: ${cfg.temp_on_soft_c ?? 0}\n` +
+    `temp_on_hard_c: ${cfg.temp_on_hard_c ?? 0}\n` +
+    `temp_off_soft_c: ${cfg.temp_off_soft_c ?? 0}\n` +
+    `temp_off_hard_c: ${cfg.temp_off_hard_c ?? 0}\n` +
     `screen_on_keep_cores: [${on.join(',')}]\n` +
     `screen_off_keep_cores: [${off.join(',')}]\n`
   await Bridge.writeFile(`${HOTPLUG_DIR}/config.yaml`, body)
@@ -131,6 +140,10 @@ const DEFAULT_CONFIG: HotplugConfig = {
   thermal_force_all_on_c: 70,
   screen_on_keep_cores: [0, 1, 2, 3, 4, 5],
   screen_off_keep_cores: [0, 1],
+  temp_on_soft_c: 0,
+  temp_on_hard_c: 70,
+  temp_off_soft_c: 0,
+  temp_off_hard_c: 70,
 }
 
 /**
@@ -158,6 +171,10 @@ export async function fetchHotplugConfig(): Promise<HotplugConfig> {
         case 'thermal_force_all_on_c': result.thermal_force_all_on_c = parseFloat(value) || 70; break
         case 'screen_on_keep_cores': result.screen_on_keep_cores = parseCoreArray(value); break
         case 'screen_off_keep_cores': result.screen_off_keep_cores = parseCoreArray(value); break
+        case 'temp_on_soft_c': result.temp_on_soft_c = parseFloat(value) || 0; break
+        case 'temp_on_hard_c': result.temp_on_hard_c = parseFloat(value) || 0; break
+        case 'temp_off_soft_c': result.temp_off_soft_c = parseFloat(value) || 0; break
+        case 'temp_off_hard_c': result.temp_off_hard_c = parseFloat(value) || 0; break
       }
     }
     return sanitizeKeepCoresAll(result)

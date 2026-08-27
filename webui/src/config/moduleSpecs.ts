@@ -68,13 +68,19 @@ export interface ModuleMeta {
 export const MODULES: ModuleMeta[] = [
   { key: 'hotplug', name: '核心开关', color: '#ef4444', icon: 'cluster-o',          route: '/config/hotplug', brief: '8 个处理器核心的在线休眠与保留策略', tag: '改动自动生效' },
   { key: 'cpu',     name: '处理器',   color: '#3b82f6', icon: 'setting-o',          route: '/config/cpu',     brief: '升降频灵敏度, 按省电/均衡/性能/极速分别记忆', tag: '改动自动生效' },
-  { key: 'gpu',     name: '显卡',     color: '#8b5cf6', icon: 'chart-trending-o',   route: '/config/gpu',     brief: '显卡频率由帧平滑引擎自动调节, 此处看实时负载', tag: '自动管理' },
-  { key: 'touch',   name: '触摸加速', color: '#06b6d4', icon: 'hot-o',              route: '/config/touch',   brief: '手指触屏瞬间唤醒核心, 滑动更跟手', tag: '自动管理' },
-  { key: 'frame',   name: '帧平滑',   color: '#ec4899', icon: 'play-circle-o',      route: '/config/frame',   brief: '游戏帧率自动稳帧, 目标档位与灵敏度', tag: '改动自动生效' },
-  { key: 'io',      name: '读写',     color: '#f59e0b', icon: 'records',            route: '/config/io',      brief: '存储调度算法与预读缓存, 影响打开应用速度', tag: '改动自动生效' },
-  { key: 'swap',    name: '内存',     color: '#10b981', icon: 'diamond-o',          route: '/config/swap',    brief: '内存压力与压缩交换监控, 交由系统自动调节', tag: '自动管理' },
-  { key: 'temp',    name: '温度保护', color: '#991b1b', icon: 'warning-o',          route: '/config/temp',    brief: '过热强制全核在线的保护温度线', tag: '改动自动生效' },
+  { key: 'gpu',     name: '显卡',     color: '#8b5cf6', icon: 'chart-trending-o',   route: '/config/gpu',     brief: '显卡频率护栏与负载加速, 亮屏/息屏独立', tag: '改动自动生效' },
+  { key: 'touch',   name: '触摸加速', color: '#06b6d4', icon: 'hot-o',              route: '/config/touch',   brief: '触摸唤醒核心的开关/范围/时长, 亮屏/息屏独立', tag: '改动自动生效' },
+  { key: 'frame',   name: '帧平滑',   color: '#ec4899', icon: 'play-circle-o',      route: '/config/frame',   brief: '游戏帧率自动稳帧, 掉帧判定与提频双套', tag: '改动自动生效' },
+  { key: 'io',      name: '读写',     color: '#f59e0b', icon: 'records',            route: '/config/io',      brief: '存储调度算法与预读缓存, 亮屏/息屏独立', tag: '改动自动生效' },
+  { key: 'swap',    name: '内存',     color: '#10b981', icon: 'diamond-o',          route: '/config/swap',    brief: '交换倾向与内存压力线, 亮屏/息屏独立', tag: '改动自动生效' },
+  { key: 'temp',    name: '温度保护', color: '#991b1b', icon: 'warning-o',          route: '/config/temp',    brief: '软/硬双温度线, 亮屏/息屏独立', tag: '改动自动生效' },
 ]
+
+/** 亮/息屏双套切换的组名 (各模块页共用) */
+export const SCREEN_SCOPES: Record<string, string> = {
+  screen_on: '亮屏时',
+  screen_off: '息屏时',
+}
 
 /* ==================== 调度模式 (全局唯一真源: stores/scheduler) ==================== */
 
@@ -216,6 +222,10 @@ export const HOTPLUG_DEFAULTS = {
   thermal_force_all_on_c: 70,
   screen_on_keep_cores: [0, 1, 2, 3, 4, 5] as number[],
   screen_off_keep_cores: [0, 1] as number[],
+  temp_on_soft_c: 0,
+  temp_on_hard_c: 70,
+  temp_off_soft_c: 0,
+  temp_off_hard_c: 70,
 }
 
 /** 读写 (IO_Settings 内层, 注意值必须是字符串) */
@@ -223,12 +233,187 @@ export const IO_DEFAULTS: Record<string, string> = {
   Scheduler: '', read_ahead_kb: '128', nomerges: '2', iostats: '0',
 }
 
+export const FRAME_MODULE_PARAMS: ParamSpec[] = [
+  {
+    path: 'jank_margin_ms', label: '掉帧判定阈值', type: 'range', min: 1, max: 20, step: 1, unit: ' ms', fb: '4',
+    desc: ['一帧的耗时超出预算多少毫秒判定为掉帧 (越小判定越严)。', 
+           '更小 → 轻微超时也算掉帧, 提频更积极更耗电。', 
+           '更大 → 只盯严重卡顿, 更省电但小抖动不处理。', 
+           '电竞手感 → 2~3; 日常 → 4~6。', 
+           '4 毫秒。'],
+  },
+  {
+    path: 'boost_enabled', label: '掉帧提频开关', type: 'select', fb: 'true',
+    options: [{ v: 'true', n: '开启 (掉帧即提频)' }, { v: 'false', n: '关闭' }],
+    desc: ['判定掉帧后立即提升处理器性能档位的总开关。', 
+           '(开启) 掉帧瞬间频率顶上去, 帧率更快恢复。', 
+           '(关闭) 只记录不干预, 完全交给基础调速。', 
+           '息屏时帧引擎本来挂起, 息屏套一般关闭。', 
+           '亮屏开启, 息屏关闭。'],
+  },
+  {
+    path: 'boost_strength', label: '提频强度', type: 'range', min: 0, max: 2, step: 0.1, fb: '1',
+    desc: ['掉帧提频的力度倍数 (1 = 标准幅度)。', 
+           '更猛 → 帧率恢复更快, 功耗尖峰更大。', 
+           '更缓 → 平滑过渡省电, 恢复稍慢。', 
+           '团战掉帧回不来 → 1.3~1.5。', 
+           '1.0。'],
+  },
+]
+
+/** 温度双套 (hotplug/config.yaml 的 temp_{on,off}_{soft,hard}_c) */
+export const TEMP_DUAL_PARAMS: ParamSpec[] = [
+  {
+    path: 'soft_c', label: '软阈值 (预警)', type: 'range', min: 0, max: 95, step: 1, unit: '°C', fb: '0',
+    desc: ['温度达到这条线时记预警日志, 提醒注意但不改变行为 (0 = 关闭预警)。', 
+           '更低 → 更早收到温度提醒。', 
+           '更高 / 0 → 只在真正过热时才有动静。', 
+           '夏天户外使用 → 55 提前观察。', 
+           '0 (关闭)。'],
+  },
+  {
+    path: 'hard_c', label: '硬阈值 (强制全核)', type: 'range', min: 45, max: 100, step: 1, unit: '°C', fb: '70',
+    desc: ['温度达到这条线时所有休眠核心立即强制拉回在线 — 过热比费电更危险。', 
+           '(调低) 保护更早介入, 高温天性能更稳。', 
+           '(调高) 尽量晚干预, 机身更烫才触发。', 
+           '夏天烫手掉帧 → 下调到 65。', 
+           '70°C 行业安全线。'],
+  },
+]
+
+/** IO 息屏套 (modules.io.screen_off) */
+export const IO_OFF_PARAMS: ParamSpec[] = [
+  {
+    path: 'scheduler', label: '存储调度算法', type: 'select', fb: '', asString: true,
+    options: [
+      { v: '', n: '保持亮屏设置' }, { v: 'mq-deadline', n: 'mq-deadline (低延迟)' },
+      { v: 'bfq', n: 'bfq (公平流畅)' }, { v: 'kyber', n: 'kyber (均衡)' },
+      { v: 'none', n: 'none (多核直通)' },
+    ],
+    desc: ['黑屏待机时切换的存储调度算法 (留空 = 不改, 沿用亮屏值)。', 
+           '待机时换低延迟算法 → 后台小任务更快醒。', 
+           '保持一致 → 避免反复切换开销。', 
+           '一般留空即可。', 
+           '保持亮屏设置。'],
+  },
+  {
+    path: 'read_ahead_kb', label: '息屏预读缓存', type: 'range', min: 32, max: 2048, step: 32, unit: ' KB', fb: '128', asString: true,
+    desc: ['黑屏待机时的预读大小 (音乐/下载后台场景可适当加大)。', 
+           '后台顺序读更快。', 
+           '省内存省电。', 
+           '夜间挂下载 → 512; 纯待机 → 64~128。', 
+           '128 KB。'],
+  },
+]
+
 /** 帧平滑 (rules.yaml fas_rules) 默认 */
 export const FAS_DEFAULTS: Record<string, unknown> = {
   fps_margin: 3,
   fps_gears: [30, 60, 90, 120],
   'pid.kp': 0.5, 'pid.ki': 0.05, 'pid.kd': 0.1,
 }
+
+/** 各模块双套默认值 (恢复按钮数据源; gpu/touch/swap/frame = config.modules.*;
+ *  io 仅息屏套; temp = hotplug/config.yaml temp_* 键) */
+export const MODULE_SCOPED_DEFAULTS: Record<string, Record<string, Record<string, unknown>>> = {
+  gpu: {
+    screen_on:  { min_pct: 0, max_pct: 100, boost_util_pct: 0 },
+    screen_off: { min_pct: 0, max_pct: 100, boost_util_pct: 0 },
+  },
+  touch: {
+    screen_on:  { enabled: true, extra_cores: 8, duration_ms: 200 },
+    screen_off: { enabled: false, extra_cores: 0, duration_ms: 200 },
+  },
+  swap: {
+    screen_on:  { swappiness: 100, pressure_pct: 20 },
+    screen_off: { swappiness: 100, pressure_pct: 20 },
+  },
+  frame: {
+    screen_on:  { jank_margin_ms: 4, boost_enabled: true, boost_strength: 1.0 },
+    screen_off: { jank_margin_ms: 4, boost_enabled: false, boost_strength: 1.0 },
+  },
+  io: {
+    screen_off: { scheduler: '', read_ahead_kb: '128' },
+  },
+  temp: {
+    screen_on:  { soft_c: 0, hard_c: 70 },
+    screen_off: { soft_c: 0, hard_c: 70 },
+  },
+}
+
+export const GPU_PARAMS: ParamSpec[] = [
+  {
+    path: 'min_pct', label: '最低频率', type: 'range', min: 0, max: 100, step: 5, unit: '%', fb: '0',
+    desc: ['显卡频率下限 (相对硬件最高频的百分比), 再闲也不低于这条线。', 
+           '待机频率抬升, 滑动渲染零波动, 但耗电增加。', 
+           '空闲充分降频省电, 极端场景可能偶发轻微掉帧。', 
+           '游戏过场动画掉帧 → 抬到 20~30; 省电 → 保持 0。', 
+           '0% (不限制)。'],
+  },
+  {
+    path: 'max_pct', label: '最高频率', type: 'range', min: 20, max: 100, step: 5, unit: '%', fb: '100',
+    desc: ['显卡频率上限 (相对硬件最高频的百分比)。', 
+           '放开上限游戏满血, 发热耗电随之上升。', 
+           '封顶限频明显降温, 重负载游戏帧率受影响。', 
+           '夏天日常 70~80%; 跑分保持 100。', 
+           '100% (不限制)。'],
+  },
+  {
+    path: 'boost_util_pct', label: '加速阈值', type: 'range', min: 0, max: 100, step: 5, unit: '%', fb: '0',
+    desc: ['显卡负载超过这条线时, 临时把最高频拉满; 回落后自动恢复上限 (0 = 关闭加速)。', 
+           '更低阈值 → 更容易触发加速, 游戏更稳更耗电。', 
+           '更高阈值 → 只在重负载时加速, 更省电。', 
+           '游戏帧率不稳 → 60~70; 日常 → 0 关闭。', 
+           '0% (关闭)。'],
+  },
+]
+
+export const TOUCH_PARAMS: ParamSpec[] = [
+  {
+    path: 'enabled', label: '触摸加速开关', type: 'select', fb: 'true',
+    options: [{ v: 'true', n: '开启 (跟手优先)' }, { v: 'false', n: '关闭 (省电优先)' }],
+    desc: ['手指触到屏幕的瞬间立即唤醒核心, 保证滑动跟手。', 
+           '(开启) 触摸瞬间核心就绪, 但待机功耗略增。', 
+           '(关闭) 触摸后由负载决定唤醒, 极省电但开头几帧可能粘滞。', 
+           '息屏黑屏时触摸加速本来就不参与; 息屏套一般关闭。', 
+           '亮屏开启, 息屏关闭。'],
+  },
+  {
+    path: 'extra_cores', label: '额外唤醒核心数', type: 'range', min: 0, max: 8, step: 1, unit: ' 个', fb: '8',
+    desc: ['触摸瞬间除保留核心外额外唤醒几个核心 (8 = 全部唤醒, 即最跟手)。', 
+           '唤醒更多核心 → 重开应用/游戏瞬间越流畅, 越费电。', 
+           '只唤醒保留核心 → 最省电, 大核需等负载判定才起。', 
+           '游戏切回 → 6~8; 日常聊天 → 2~3。', 
+           '8 个 (全部)。'],
+  },
+  {
+    path: 'duration_ms', label: '保护时长', type: 'range', min: 50, max: 1000, step: 50, unit: ' ms', fb: '200',
+    desc: ['触摸唤醒核心后的保护窗口, 期间不允许关核。', 
+           '更长的保护 → 连续滑动全程满血, 耗电略增。', 
+           '更短的保护 → 点一下就回落, 最省电。', 
+           '快速滑动感觉掉帧 → 加到 300~400。', 
+           '200 毫秒。'],
+  },
+]
+
+export const SWAP_PARAMS: ParamSpec[] = [
+  {
+    path: 'swappiness', label: '交换倾向', type: 'range', min: 0, max: 200, step: 10, fb: '100',
+    desc: ['内核把内存数据换出到压缩交换区的积极程度 (即 vm.swappiness)。', 
+           '更积极换出 → 后台保留更多, 但前台可能卡顿。', 
+           '更不倾向换出 → 前台更流畅, 但后台更容易被杀。', 
+           '游戏档建议 60~80; 大内存多后台 → 120~160。', 
+           '100 (内核默认)。'],
+  },
+  {
+    path: 'pressure_pct', label: '内存压力线', type: 'range', min: 0, max: 100, step: 5, unit: '%', fb: '20',
+    desc: ['内存阻塞占比超过这条线时记预警日志 (仅监控提示, 不改变调度行为)。', 
+           '更低 → 更早发现内存吃紧。', 
+           '更高 → 只在严重不足时提醒。', 
+           '感觉后台被杀频繁 → 调低到 10 提前观察。', 
+           '20%。'],
+  },
+]
 
 /* ==================== 读写 (橙色) — config.IO_Settings (注意 Scheduler 大写 S) ==================== */
 

@@ -72,11 +72,17 @@ function summaryOf(key: string): string {
       return `${mode}档 · 升频阈值 ${pct}%`
     }
     case 'gpu': {
-      const g = Number(snap.value?.gpu_load_pct ?? 0)
-      return g > 0 ? `负载 ${Math.round(g)}%` : '负载待读取'
+      const g = deepGet(mainCfg.value, 'modules.gpu.screen_on')
+      const max = Number(g?.max_pct ?? 100)
+      const boost = Number(g?.boost_util_pct ?? 0)
+      return boost > 0 ? `上限 ${max}% · 加速 ${boost}%` : `上限 ${max}% · 亮/息屏双套`
     }
-    case 'touch':
-      return snap.value ? (snap.value.touch_down ? '触摸中 · 加速生效' : '静止 · 待机监听') : '读取中…'
+    case 'touch': {
+      const t = deepGet(mainCfg.value, 'modules.touch.screen_on')
+      const en = t?.enabled !== false
+      const extra = Number(t?.extra_cores ?? 8)
+      return en ? `开启 · 唤醒 +${extra} 核` : '已关闭 · 亮/息屏双套'
+    }
     case 'frame': {
       const gears = deepGet(rulesCfg.value, 'fas_rules.fps_gears')
       return Array.isArray(gears) && gears.length ? `目标档位 ${gears.join('/')}` : '档位待读取'
@@ -87,13 +93,16 @@ function summaryOf(key: string): string {
       return opt ? `算法 ${opt.n}` : '算法保持内核默认'
     }
     case 'swap': {
+      const s = deepGet(mainCfg.value, 'modules.swap.screen_on')
+      const sw = Number(s?.swappiness ?? 100)
       const mb = snap.value?.swap_used_mb
-      if (mb === undefined) return '读取中…'
-      return `压力 ${Math.round(snap.value?.mem_full_pct ?? 0)}% · 交换 ${mb} MB`
+      return `倾向 ${sw} · 交换 ${mb !== undefined ? mb + ' MB' : '--'}`
     }
     case 'temp': {
-      const t = snap.value?.temp_c ?? 0
-      return t > 0 ? `当前 ${t.toFixed(1)}°C` : '温度待读取'
+      const t = senseRes.value?.data.temp_c ?? 0
+      const hard = deepGet(mainCfg.value, '') // 占位 (temp 双套在 hotplug config, 摘要用实测温度)
+      void hard
+      return t > 0 ? `当前 ${t.toFixed(1)}°C · 双阈值` : '温度待读取'
     }
     default: return ''
   }

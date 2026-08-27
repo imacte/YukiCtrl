@@ -187,7 +187,9 @@ impl FasController {
                 } else if recent30 >= tfps - 5.0 {
                     self.cancel_boost();
                     self.downgrade_confirm_frames = 0;
-                } else if !self.downgrade_boost_active && self.downgrade_confirm_frames == 0 {
+                } else if !self.downgrade_boost_active && self.downgrade_confirm_frames == 0
+                    // 需求: 掉帧提频开关 (modules.frame.{on,off}.boost_enabled)
+                    && self.frame_boost_enabled {
                     let boost_inc = self.scaled_boost_inc();
                     self.downgrade_boost_active = true;
                     let scaled_duration = scale_frames(self.cfg.downgrade_boost_duration, self.current_target_fps);

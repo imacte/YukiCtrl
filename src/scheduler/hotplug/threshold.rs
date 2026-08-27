@@ -59,7 +59,23 @@ pub const DISABLE_REENABLE_COOLDOWN_MS: i64 = 1500;
 pub const MIN_ONLINE_CORES: u32 = 4;
 
 /// 触摸开核后保护窗口 (ms) — 漏洞 1: 开核后短时间内不允许关核
+/// 可配置化 (modules.touch.{on,off}.duration_ms): daemon 启动/配置热重载/
+/// 屏幕切换时由 scheduler 更新; 200ms 为历史默认.
 pub const TOUCH_PROTECT_MS: i64 = 200;
+
+/// 运行期触摸保护窗 (由 modules.touch 双套配置驱动; 初值 = 历史默认)
+pub static TOUCH_PROTECT_MS_RUNTIME: std::sync::atomic::AtomicI64 =
+    std::sync::atomic::AtomicI64::new(TOUCH_PROTECT_MS);
+
+/// 更新触摸保护窗 (mod.rs 每 tick 从全局配置快照写入; 幂等)
+pub fn set_touch_protect_ms(ms: i64) {
+    TOUCH_PROTECT_MS_RUNTIME.store(ms.clamp(50, 2000), std::sync::atomic::Ordering::Relaxed);
+}
+
+#[inline]
+pub fn touch_protect_ms() -> i64 {
+    TOUCH_PROTECT_MS_RUNTIME.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 /// 单个 CPU 的 idle/util 快照, 由 cpu_monitor 提供
 #[derive(Debug, Clone, Copy)]
@@ -281,9 +297,11 @@ impl ThresholdDecider {
                 .filter(|&c| !self.state(c).online)
                 .collect();
             // 所有核 (含已 online) 刷 cooldown, 防止下一 tick 立刻关掉
+            // (窗口时长可配置: modules.touch.{on,off}.duration_ms)
+            let protect_ms = touch_protect_ms();
             for c in 0..=MAX_CPU_ID {
                 let s = self.per_cpu.entry(c).or_default();
-                s.touch_cooldown_until_ms = now_ms + TOUCH_PROTECT_MS;
+                s.touch_cooldown_until_ms = now_ms + protect_ms;
             }
             // 给要 enable 的核预填 enable_debounce, 防止下一 tick 重复决策
             for cpu_id in to_enable.iter().copied() {

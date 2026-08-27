@@ -355,6 +355,11 @@ impl CpuLoadGovernor {
         if !self.active { return; }
 
         for cluster in &mut self.clusters {
+            // 全离线 policy 跳过: 离线核的 cpufreq 节点写入恒 EBUSY,
+            // 且无调度事件 → util 数据无效. 位图来自 hotplug 对账循环.
+            let any_online = cluster.affected_cpus.iter().any(|&c| crate::utils::is_cpu_online(c));
+            if !any_online { continue; }
+
             let raw_util = cluster.max_util(core_utils);
             // 尖峰抑制：单 tick 跳升超过阈值时衰减其增量，
             // 孤立瞬时尖峰（如单核 0↔100%）不瞬间拉满 perf；

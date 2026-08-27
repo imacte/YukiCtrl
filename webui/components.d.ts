@@ -18,6 +18,7 @@ declare module 'vue' {
     ResetDefaultsBtn: typeof import('./src/components/ResetDefaultsBtn.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
+    ScreenScopedModule: typeof import('./src/components/ScreenScopedModule.vue')['default']
     VanButton: typeof import('vant/es')['Button']
     VanCell: typeof import('vant/es')['Cell']
     VanConfigProvider: typeof import('vant/es')['ConfigProvider']
