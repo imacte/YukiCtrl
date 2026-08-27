@@ -37,8 +37,15 @@ if [ -d "$SCRIPTS_DIR" ]; then
 fi
 
 # 5. 启动核心领航员守护进程
-# 方式 A: 生产模式 (不记录启动日志, 节省 I/O)
+# 5a. 默认开启全量 debug 日志 (config.yaml 默认 loglevel: DEBUG)
+#     如需关闭, 在 config.yaml 里把 meta.loglevel 改为 INFO/WARN/ERROR
+# 5b. 调试模式下可额外把日志同时输出到 stderr, 写入 $LOG_DIR/boot_error.log
+LOG_LEVEL_FROM_ENV="${RUST_LOG:-debug}"
+export RUST_LOG="$LOG_LEVEL_FROM_ENV"
+
+# 方式 A: 生产模式 (stderr 丢弃, daemon 全量写入 logs/daemon.log)
 nohup "$DAEMON_PATH" > /dev/null 2>&1 &
 
-# 方式 B: 调试模式 (如果启动不起来, 用这个看错误, 输出到 logs/boot_error.log)
+# 方式 B: 调试模式 (同时把 stderr 写到 boot_error.log, 便于启动失败排查)
+#   取消下行注释即可启用; 日常使用建议保持方式 A
 # nohup "$DAEMON_PATH" > "$LOG_DIR/boot_error.log" 2>&1 &

@@ -26,7 +26,7 @@ pub struct Meta {
     pub language: String,
 }
 
-fn default_loglevel() -> String { "INFO".to_string() }
+fn default_loglevel() -> String { "DEBUG".to_string() }
 fn default_language() -> String { "en".to_string() }
 
 // ════════════════════════════════════════════════════════════════

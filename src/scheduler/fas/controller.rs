@@ -18,7 +18,7 @@
 use crate::fas_types::{FasRulesConfig, PerAppProfile};
 use crate::monitor::sense_snapshot::{sense_now, SenseSnapshot};
 use std::time::Instant;
-use log::{info, warn};
+use log::{debug, info, warn};
 
 use crate::i18n::t_with_args;
 use crate::fluent_args;
@@ -190,6 +190,7 @@ impl FasController {
 
     /// 更新前台最重线程的 CPU 利用率
     pub fn update_cpu_util(&mut self, fg_util: f32) {
+        let prev = self.ema_fg_util;
         self.foreground_max_util = fg_util;
         // EMA smooth fg_util to prevent 200ms sampling lag causing cliff drops
         if self.ema_fg_util <= 0.001 {
@@ -199,6 +200,10 @@ impl FasController {
             let alpha = if fg_util > self.ema_fg_util { 0.40 } else { 0.15 };
             self.ema_fg_util = self.ema_fg_util * (1.0 - alpha) + fg_util * alpha;
         }
+        debug!(
+            "[fas] update_cpu_util fg_util={:.2} ema {:.2} -> {:.2}",
+            fg_util, prev, self.ema_fg_util,
+        );
     }
 
     /// 更新各核心利用率快照
@@ -299,6 +304,7 @@ impl FasController {
 
     /// 通知 FAS 当前前台游戏变化
     pub fn set_game(&mut self, _pid: i32, package: &str) {
+        debug!("[fas] set_game pid={} pkg={}", _pid, package);
         self.current_package = package.to_string();
         let profile = self.cfg.per_app_profiles.get(package).cloned();
         if let Some(ref p) = profile {
@@ -313,6 +319,10 @@ impl FasController {
                     self.refresh_cached_values();
                 }
             }
+            debug!(
+                "[fas] applied per-app profile pkg={} margin={:.2} gears={:?} target={:.0}",
+                package, self.fps_margin, self.fps_gears, self.current_target_fps,
+            );
             info!("{}", t_with_args("fas-set-game", &fluent_args!(
                 "pkg" => package,
                 "gears" => format!("{:?}", self.fps_gears),
@@ -329,6 +339,7 @@ impl FasController {
 
     /// 通知 FAS 退出游戏
     pub fn clear_game(&mut self) {
+        debug!("[fas] clear_game (was pkg={})", self.current_package);
         self.current_package.clear();
         self.active_profile = None;
         self.foreground_max_util = 0.0;
@@ -351,7 +362,12 @@ impl FasController {
     /// 由 `scheduler::mod.rs::DaemonEvent::ModeChange` 在模式切换时调用.
     /// 见 `mode_target_pressure()` 的 4 种模式映射表.
     pub fn set_target_pressure(&mut self, target: f32) {
-        self.target_pressure = target.clamp(0.0, 100.0);
+        let clamped = target.clamp(0.0, 100.0);
+        debug!(
+            "[fas] set_target_pressure target={:.2} (clamped={:.2})",
+            target, clamped
+        );
+        self.target_pressure = clamped;
     }
 
     /// Phase 2 / ticket-07: 设置 target_pressure 同时叠加 App 规则偏置.
@@ -366,7 +382,12 @@ impl FasController {
     /// - bias=0 时行为与 set_target_pressure 完全一致 (向后兼容)
     pub fn set_target_pressure_with_app_bias(&mut self, target: f32, bias_offset: i32) {
         let biased = target + bias_offset as f32;
-        self.target_pressure = biased.clamp(5.0, 95.0);
+        let clamped = biased.clamp(5.0, 95.0);
+        debug!(
+            "[fas] set_target_pressure_with_app_bias base={:.2} bias={} -> biased={:.2} (clamped to 5..=95) = {:.2}",
+            target, bias_offset, biased, clamped,
+        );
+        self.target_pressure = clamped;
     }
 
     /// 喂入综合压力指数 (调用方已经在别处算过).
@@ -374,6 +395,7 @@ impl FasController {
     pub fn update_pressure_index(&mut self, raw: f32, frame_drop_active: bool) {
         self.last_frame_drop_active = frame_drop_active;
         let v = raw.clamp(0.0, 100.0);
+        let prev = self.ema_pressure_index;
         if self.ema_pressure_index <= 0.001 {
             self.ema_pressure_index = v;
         } else {
@@ -381,6 +403,10 @@ impl FasController {
             let alpha = if v > self.ema_pressure_index { 0.40 } else { 0.15 };
             self.ema_pressure_index = self.ema_pressure_index * (1.0 - alpha) + v * alpha;
         }
+        debug!(
+            "[fas] update_pressure_index raw={:.2} frame_drop={} ema {:.2} -> {:.2}",
+            v, frame_drop_active, prev, self.ema_pressure_index,
+        );
     }
 
     /// 一次性更新: 拉 sense_now() + 调用 compute_pressure_index + EMA 平滑.

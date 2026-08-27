@@ -91,6 +91,7 @@ pub fn current_package() -> String {
 
 // 在检测到新包名时更新它
 fn set_current_package(pkg: &str, pid: i32) {
+    debug!("[app_detect] set_current_package pkg={} pid={}", pkg, pid);
     *CURRENT_PACKAGE.lock().unwrap() = pkg.to_string();
     CURRENT_PID.store(pid, Ordering::Relaxed);
 }
@@ -176,10 +177,16 @@ fn get_focused_app_from_cgroup(ignored_apps: &[String]) -> Result<(String, i32),
 // ==================== [辅助函数] ====================
 
 fn determine_mode(config: &RulesConfig, current_package: &str) -> String {
-    if !config.dynamic_enabled {
-        return config.global_mode.clone();
-    }
-    config.app_modes.get(current_package).cloned().unwrap_or_else(|| config.global_mode.clone())
+    let mode = if !config.dynamic_enabled {
+        config.global_mode.clone()
+    } else {
+        config.app_modes.get(current_package).cloned().unwrap_or_else(|| config.global_mode.clone())
+    };
+    debug!(
+        "[app_detect] determine_mode pkg={} dynamic={} -> mode={}",
+        current_package, config.dynamic_enabled, mode,
+    );
+    mode
 }
 
 pub fn get_default_rules() -> RulesConfig {
@@ -293,10 +300,12 @@ pub fn app_detection_loop(
                 pending_package = detected_pkg.clone();
                 pending_pid = detected_pid;
                 debounce_start = Instant::now();
+                debug!("[app_detect] detected new pkg={} pid={} (debouncing)", detected_pkg, detected_pid);
             } else if debounce_start.elapsed() >= Duration::from_millis(500) {
                 final_pkg = pending_package.clone();
                 final_pid = pending_pid;
                 pending_package.clear();
+                debug!("[app_detect] debounced confirm pkg={} pid={}", final_pkg, final_pid);
             }
         } else {
             pending_package.clear();

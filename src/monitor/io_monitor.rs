@@ -33,7 +33,7 @@ use std::sync::mpsc::Sender;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use log::warn;
+use log::{debug, warn};
 
 use crate::common::DaemonEvent;
 use crate::monitor::sense_snapshot::{io_push, IoState};
@@ -82,7 +82,10 @@ fn parse_line(line: &str) -> Option<LineParsed> {
 fn read_pressure() -> (LineParsed, LineParsed) {
     let content = match fs::read_to_string(PROC_PRESSURE_IO) {
         Ok(s) => s,
-        Err(_) => return (LineParsed::default(), LineParsed::default()),
+        Err(e) => {
+            warn!("[io_monitor] read {} failed: {}", PROC_PRESSURE_IO, e);
+            return (LineParsed::default(), LineParsed::default());
+        }
     };
     let mut some = LineParsed::default();
     let mut full = LineParsed::default();
@@ -95,6 +98,10 @@ fn read_pressure() -> (LineParsed, LineParsed) {
             }
         }
     }
+    debug!(
+        "[io_monitor] PSI some_pct={:.2} full_pct={:.2} some_us={} full_us={}",
+        some.avg10_pct, full.avg10_pct, some.total_us, full.total_us,
+    );
     (some, full)
 }
 
@@ -112,6 +119,7 @@ fn tick_once() {
 
 /// 启动采集线程
 pub fn start_io_loop(_tx: Sender<DaemonEvent>) {
+    debug!("[io_monitor] starting tick loop ({}ms)", TICK_MS);
     thread::Builder::new()
         .name("io_monitor".to_string())
         .spawn(move || loop {

@@ -188,6 +188,7 @@ static TOUCH_MONITOR_STOP: AtomicBool = AtomicBool::new(false);
 
 /// 请求停止触摸采集线程 (主流程调用, idempotent)
 pub fn request_stop_touch_monitor() {
+    debug!("[touch_monitor] request_stop");
     TOUCH_MONITOR_STOP.store(true, Ordering::SeqCst);
 }
 
@@ -246,7 +247,9 @@ fn touch_loop_inner() -> Result<(), Box<dyn std::error::Error>> {
     let mut last_event_ms: i64 = now_ms();
     let mut events_in_tick: u32 = 0;
     let mut last_push_ms: i64 = 0;
+    let mut last_push_was_down: Option<bool> = None;
     let ev_size = std::mem::size_of::<InputEvent>();
+    debug!("[touch_monitor] entering epoll loop on {}", device_path);
 
     loop {
         // 每次 epoll_wait 前检查 STOP
@@ -298,6 +301,14 @@ fn touch_loop_inner() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 now.saturating_sub(last_event_ms).max(0) as u64
             };
+            // 只在 down 状态切换或事件计数>0 时打 debug, 避免每 200ms 一条日志
+            if last_push_was_down != Some(down) || events_in_tick > 0 {
+                debug!(
+                    "[touch_monitor] tick push down={} since_ms={} last_age_ms={} events={}",
+                    down, down_since, last_age, events_in_tick,
+                );
+                last_push_was_down = Some(down);
+            }
             touch_push(TouchState {
                 down,
                 down_since_ms: down_since,

@@ -36,6 +36,7 @@
 
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
+use log::debug;
 
 use crate::monitor::cpu_monitor::{idle_snapshot_now, CpuIdleSnapshot};
 
@@ -225,6 +226,22 @@ pub fn sense_now() -> SenseSnapshot {
     // ticket-06: 在决策层调用时拉取最新 CPU 状态, 保证 8 路永远新鲜.
     // cpu_monitor 不动; 这里只在返回前一次性读.
     snap.cpu = idle_snapshot_now();
+    // 只在 debug 开启时才构造字符串 (避免热路径开销)
+    if log::log_enabled!(log::Level::Debug) {
+        // mem_some_us 是 10s 窗口内的累计 us, 转成 % 便于一眼读
+        let mem_pct = (snap.swap.mem_some_us as f32 / 10_000_000.0 * 100.0).clamp(0.0, 100.0);
+        debug!(
+            "[sense_snapshot] touch={} gpu={}MHz fps={} temp={}°C screen={} io_pct={:.1} mem_pct={:.1} cpu_avg={:.1}",
+            if snap.touch.down { "DOWN" } else { "up" },
+            snap.gpu.cur_freq_hz / 1_000_000,
+            snap.fps,
+            snap.temp_c() as i32,
+            snap.screen_on,
+            snap.io.some_pct,
+            mem_pct,
+            snap.cpu_util_avg(),
+        );
+    }
     snap
 }
 

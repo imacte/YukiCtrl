@@ -34,7 +34,7 @@
 //! * `start_watchdog_thread()` 启动一个后台 daemon 线程, 阻塞跑循环,
 //!   直到进程退出.
 
-use log::{info, warn, error};
+use log::{debug, info, warn, error};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
@@ -59,6 +59,7 @@ pub fn heartbeat_tick() {
         .map(|d| d.as_secs())
         .unwrap_or(0);
     HEARTBEAT_AT_SEC.store(now, Ordering::Relaxed);
+    // 不打 log: 此函数每秒被调用数十次, 会淹没日志
 }
 
 /// 查询当前心跳时间距今秒数. u64::MAX = 从未 tick 过.
@@ -97,27 +98,36 @@ pub fn start_watchdog_thread() {
 
 fn run_one_cycle() {
     let age = heartbeat_age_sec();
+    let online = count_online_cores();
+    let temp_millic = read_sense_temp_millic();
+    let fail_count = RECOVERY_FAIL_COUNT.load(Ordering::Relaxed);
+    debug!(
+        "[watchdog] cycle tick: hb_age={}s online_cores={} temp_millic={} fail_count={}",
+        age, online, temp_millic, fail_count,
+    );
+
     if age > HEARTBEAT_TIMEOUT_SEC {
         warn!("[watchdog] heartbeat stale: {}s > {}s", age, HEARTBEAT_TIMEOUT_SEC);
         try_recover("heartbeat_stale");
         return;
     }
 
-    let online = count_online_cores();
     if online < MIN_ONLINE_CORES {
         warn!("[watchdog] online cores too few: {} < {}", online, MIN_ONLINE_CORES);
         try_recover("cores_offline");
         return;
     }
 
-    let temp_millic = read_sense_temp_millic();
     if temp_millic != i32::MIN && temp_millic >= TEMP_CRITICAL_MILLIC {
         warn!("[watchdog] CPU temperature critical: {}°C", temp_millic / 1000);
         try_recover("temp_critical");
         return;
     }
 
-    RECOVERY_FAIL_COUNT.store(0, Ordering::Relaxed);
+    let prev_fail = RECOVERY_FAIL_COUNT.swap(0, Ordering::Relaxed);
+    if prev_fail > 0 {
+        debug!("[watchdog] clear recovery fail_count (was {})", prev_fail);
+    }
 }
 
 fn count_online_cores() -> usize {
@@ -153,6 +163,7 @@ fn try_recover(reason: &'static str) {
     error!("[watchdog] recovery attempt #{} triggered by '{}'", attempt, reason);
 
     let script_path = resolve_restore_script_path();
+    debug!("[watchdog] invoking {} (reason={}, attempt={})", script_path, reason, attempt);
     // MODDIR 必须显式传给子 shell —— restore_defaults.sh 内部用 $MODDIR 写日志
     // 默认值已经脚本里兜底, 但传 env 后即便路径未来变化也不用改脚本.
     let moddir = crate::common::get_module_root().to_string_lossy().into_owned();
@@ -165,6 +176,10 @@ fn try_recover(reason: &'static str) {
     match result {
         Ok(out) if out.status.success() => {
             info!("[watchdog] restore_defaults.sh OK (attempt #{}, reason='{}')", attempt, reason);
+            debug!(
+                "[watchdog] restore_defaults.sh stdout (first 200B)={:?}",
+                String::from_utf8_lossy(&out.stdout).chars().take(200).collect::<String>()
+            );
         }
         Ok(out) => {
             warn!(

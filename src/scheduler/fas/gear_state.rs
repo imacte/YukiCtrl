@@ -15,7 +15,7 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-use log::info;
+use log::{debug, info};
 
 use crate::i18n::t_with_args;
 use crate::fluent_args;
@@ -44,6 +44,10 @@ impl FasController {
 
     pub(super) fn do_gear_switch(&mut self, new_fps: f32, perf: f32, dampen: u32) {
         let old = self.current_target_fps;
+        debug!(
+            "[fas-gear] do_gear_switch old={:.0} -> new={:.0} perf={:.2} dampen={}",
+            old, new_fps, perf, dampen,
+        );
         self.current_target_fps = new_fps;
         self.refresh_cached_values();
         self.upgrade_confirm_frames = 0;

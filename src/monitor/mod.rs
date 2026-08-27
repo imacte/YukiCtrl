@@ -20,7 +20,7 @@ use std::thread;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::Sender;
-use log::{error, info};
+use log::{debug, error, info};
 
 pub mod config;
 pub mod app_detect;
@@ -42,6 +42,9 @@ use crate::i18n::{t, t_with_args};
 // 启动函数
 pub fn start_monitor(tx: Sender<DaemonEvent>) -> Result<(), Box<dyn Error>> {
     info!("{}", t("monitor-starting"));
+    debug!(
+        "[monitor] starting 8-channel sensors: touch/gpu/io/swap/temp + fps/cpu/screen"
+    );
 
     // ===== 解除内核 eBPF Map 内存锁定限制 =====
     unsafe {
@@ -134,18 +137,22 @@ pub fn start_monitor(tx: Sender<DaemonEvent>) -> Result<(), Box<dyn Error>> {
     // 7. Ticket-03 / Phase 1 八路感知新增: 触摸采集 (epoll)
     let tx_touch = tx.clone();
     touch_monitor::start_touch_loop(tx_touch);
+    debug!("[monitor] touch_monitor thread spawned");
 
     // 8. GPU 采集 (200ms tick, /sys/class/devfreq/*)
     let tx_gpu = tx.clone();
     gpu_monitor::start_gpu_loop(tx_gpu);
+    debug!("[monitor] gpu_monitor loop started");
 
     // 9. IO 压力采集 (/proc/pressure/io)
     let tx_io = tx.clone();
     io_monitor::start_io_loop(tx_io);
+    debug!("[monitor] io_monitor loop started");
 
     // 10. Swap / 内存压力采集 (/proc/pressure/memory + meminfo + zram)
     let tx_swap = tx.clone();
     swap_monitor::start_swap_loop(tx_swap);
+    debug!("[monitor] swap_monitor loop started");
 
     // 7. 启动应用检测主循环 (阻塞)
     app_detect::app_detection_loop(
