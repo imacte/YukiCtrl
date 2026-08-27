@@ -34,12 +34,19 @@ fn update_state_if_changed(state_arc: &Arc<Mutex<bool>>, new_state: bool, source
         *state_lock = new_state;
         let state_str = if new_state { "ON" } else { "OFF" };
         info!("{}", t_with_args("screen-state-changed-value", &fluent_args!("state" => state_str)));
+        // 同步推送进 sense_snapshot: hotplug 决策器用它选择 keep_cores 白名单
+        crate::monitor::sense_snapshot::screen_push(new_state);
     } else {
         debug!("[screen_detect] {} reported state={} (no change)", source, new_state);
     }
 }
 
 pub fn monitor_screen_state_uevent(state_arc: Arc<Mutex<bool>>) -> Result<(), Box<dyn Error>> {
+    // 初始同步: daemon 启动时设备大概率亮屏, 把 Arc 初值 (true) 推给 sense_snapshot,
+    // 避免首个 uevent 到达前 hotplug 读到 Default=false 而误用息屏白名单.
+    let initial = *state_arc.lock().unwrap();
+    crate::monitor::sense_snapshot::screen_push(initial);
+
     let mut socket = Socket::new(NETLINK_KOBJECT_UEVENT)?;
     let sa = SocketAddr::new(process::id(), 1);
     socket.bind(&sa)?;

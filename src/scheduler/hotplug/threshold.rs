@@ -26,12 +26,18 @@
 
 use std::collections::HashSet;
 
-/// CPU 永远不被 disable 的白名单 (D2: cpu0/1)
+/// CPU 永远不被 disable 的白名单基线 (D2: cpu0/1)
 ///
-/// `cpu0` = SMP boot CPU, 关了 kernel panic
-/// `cpu1` = 同 cluster A510, 与 cpu0 共 cache, 关了收益最大但风险也最大
+/// `cpu0` = SMP boot CPU, 关了 kernel panic — 这是内核安全底线, 无论用户怎么配都保留.
+/// `cpu1` = 同 cluster A510, 与 cpu0 共 cache, 关了收益最大但风险也最大.
 /// `baseline 实测`: cpu0/1 capacity=379, 确实是 LITTLE
+///
+/// 实际生效的白名单来自用户配置 (`screen_on_keep_cores` / `screen_off_keep_cores`),
+/// 见 [`CpuAllowList::from_keep_cores`] — cpu0 恒保护 + 至少 2 核的内建约束在那里实现.
 pub const PROTECTED_CPUS: &[u32] = &[0, 1];
+
+/// 系统 CPU 总数上限 (决策只认 cpu0..=7, 8 核 SoC)
+pub const MAX_CPU_ID: u32 = 7;
 
 /// disable 触发需要的连续 tick 数 (D3: 200ms tick * 5 = 1s debounce)
 pub const DISABLE_DEBOUNCE_TICKS: u32 = 5;
@@ -39,8 +45,13 @@ pub const DISABLE_DEBOUNCE_TICKS: u32 = 5;
 /// enable 触发需要的连续 tick 数 (200ms * 2 = 400ms, FAS panic 时立刻 enable 不需要 debounce)
 pub const ENABLE_DEBOUNCE_TICKS: u32 = 2;
 
-/// thermal 强制全开的温度阈值 (°C)
+/// thermal 强制全开的默认温度阈值 (°C)
 pub const THERMAL_FORCE_ALL_ON_C: f32 = 70.0;
+
+/// 主动关核后的 enable 冷却窗 (ms):
+/// offline 核在 /proc/stat 里统计冻结, 刚关掉的核会读到失真利用率.
+/// 禁止在这个窗口内因该失真数据把核再次拉起, 防 关↔开 抖动.
+pub const DISABLE_REENABLE_COOLDOWN_MS: i64 = 1500;
 
 /// 最少在线核数 (漏洞 2: 防止 cpu2-7 全关导致通知/闹钟卡顿)
 /// 基线实测 cpu0/1 是 LITTLE (capacity=379), cpu2-7 包含 4×A710 + 2×A510.
@@ -69,6 +80,8 @@ pub struct HotplugThresholds {
     pub on_threshold_util_pct: f32,
     /// 漏洞 2: 至少保留在线核数 (WebUI 可调, 默认 MIN_ONLINE_CORES)
     pub min_online_cores: u32,
+    /// SoC 温度达到此值时强制全核在线 (°C, WebUI 可调, 默认 70.0)
+    pub thermal_force_all_on_c: f32,
 }
 
 impl Default for HotplugThresholds {
@@ -77,6 +90,7 @@ impl Default for HotplugThresholds {
             off_threshold_idle_pct: 95.0,
             on_threshold_util_pct: 30.0,
             min_online_cores: MIN_ONLINE_CORES,
+            thermal_force_all_on_c: THERMAL_FORCE_ALL_ON_C,
         }
     }
 }
@@ -91,15 +105,47 @@ pub struct HotplugToggles {
 }
 
 /// 用户场景下哪些 cpu 不参与 hotplug 决策
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct CpuAllowList {
     pub additional_protected: HashSet<u32>,
 }
 
+impl Default for CpuAllowList {
+    /// 默认 = PROTECTED_CPUS (cpu0/1), 与历史行为一致
+    fn default() -> Self {
+        Self { additional_protected: PROTECTED_CPUS.iter().copied().collect() }
+    }
+}
+
 impl CpuAllowList {
-    /// 该 cpu 是否在白名单内 (D2: cpu0/1 + 用户额外加的)
+    /// 该 cpu 是否在白名单内
+    ///
+    /// 安全约束: `cpu0` = SMP boot CPU, **无论配置如何永远保护** (关了 kernel panic).
     pub fn is_protected(&self, cpu_id: u32) -> bool {
-        PROTECTED_CPUS.contains(&cpu_id) || self.additional_protected.contains(&cpu_id)
+        if cpu_id == 0 { return true; }
+        self.additional_protected.contains(&cpu_id)
+    }
+
+    /// 从用户配置的 keep_cores 构造合法白名单 (任务 A 安全约束内建):
+    ///
+    /// 1. 只接受 0..=MAX_CPU_ID (越界值静默丢弃, 去 duplicates)
+    /// 2. `cpu0` 强制加入 (boot CPU 绝对不能关)
+    /// 3. 有效核心数 < 2 时自动补 `cpu1` (防止全关; WebUI 层还会前置校验 >= 2)
+    ///
+    /// # Examples (语义说明, 非 doc-test — 本 crate 为 bin-only)
+    ///
+    /// - `from_keep_cores(&[0,1,2,3,4,5])` → 保护 {0..5}, cpu6/7 可动态关
+    /// - `from_keep_cores(&[])`            → 兜底保护 {0,1}
+    /// - `from_keep_cores(&[4])`           → 保护 {0,4} (已满足至少 2 个保护核)
+    /// - `from_keep_cores(&[0,1,99])`      → 越界值丢弃
+    pub fn from_keep_cores(cores: &[u32]) -> Self {
+        let mut set: HashSet<u32> =
+            cores.iter().copied().filter(|&c| c <= MAX_CPU_ID).collect();
+        set.insert(0); // boot CPU 底线
+        if set.len() < 2 {
+            set.insert(1); // 至少保留 2 核
+        }
+        Self { additional_protected: set }
     }
 }
 
@@ -111,6 +157,10 @@ struct CpuHotplugState {
     enable_debounce: u32,
     /// 漏洞 1: 触摸开核后保护窗口 (Unix epoch ms). 在此之前不允许 disable
     touch_cooldown_until_ms: i64,
+    /// 我方主动 disable 的时间戳 (0 = 不是我方关的).
+    /// 用于防振荡: offline 核的 /proc/stat 统计冻结, util 读数不可信,
+    /// 若在关核后立刻拿这个垃圾值做 enable 判定会形成 关↔开 抖动.
+    disabled_at_unix_ms: i64,
 }
 
 /// 决策结果
@@ -165,8 +215,8 @@ impl ThresholdDecider {
         touch_down: bool,
         now_ms: i64,
     ) -> HotplugDecision {
-        // --- 0. 热保护 (thermal > 70°C → 全开) ---
-        if thermal_c >= THERMAL_FORCE_ALL_ON_C {
+        // --- 0. 热保护 (超过配置的温度阈值 → 全开) ---
+        if thermal_c >= self.thresholds.thermal_force_all_on_c {
             let to_enable: Vec<u32> = loads
                 .iter()
                 .filter(|l| !self.state(l.cpu_id).online)
@@ -265,6 +315,20 @@ impl ThresholdDecider {
         }
         let min_online = self.thresholds.min_online_cores.max(2);
 
+        // 白名单强制在线: keep_cores 内但当前 offline 的核立即拉起 (bypass debounce).
+        // 典型场景: 息屏白名单 [0,1] → 亮屏切 [0..5], cpu2-5 应在下个 tick 立刻回线上,
+        // 否则亮屏瞬间只剩 2 个小核跑, 用户感觉卡顿 (任务 A 的动机).
+        // Bug 1 约束不变: 只收集列表, 等 mod.rs sysfs 写成功后才 mark_online.
+        for load in loads.iter() {
+            if self.allow_list.is_protected(load.cpu_id) && !self.state(load.cpu_id).online {
+                to_enable.push(load.cpu_id);
+                if let Some(s) = self.per_cpu.get_mut(&load.cpu_id) {
+                    s.enable_debounce = ENABLE_DEBOUNCE_TICKS; // 防下一 tick 重复决策
+                    s.disable_debounce = 0;
+                }
+            }
+        }
+
         for load in loads {
             let cpu_id = load.cpu_id;
             let entry = self.per_cpu.entry(cpu_id).or_default();
@@ -272,6 +336,12 @@ impl ThresholdDecider {
 
             // 3a. enable 决策 (Bug 1 修复后: 只收集列表, 不改 entry.online)
             if !prev_online && load.util_pct >= self.thresholds.on_threshold_util_pct {
+                // 防振荡冷却: 我方刚关掉的核, 短窗内 offline util 统计失真, 不做 enable 决策.
+                // (保护核强制在线分支在上面已先行处理, 走不到这里)
+                if now_ms.saturating_sub(entry.disabled_at_unix_ms) < DISABLE_REENABLE_COOLDOWN_MS {
+                    entry.disable_debounce = 0;
+                    continue;
+                }
                 entry.enable_debounce = entry.enable_debounce.saturating_add(1);
                 entry.disable_debounce = 0;
                 if entry.enable_debounce >= ENABLE_DEBOUNCE_TICKS {
@@ -334,10 +404,18 @@ impl ThresholdDecider {
     ///   回读发现外部覆盖 → mark_online(cpu, actual)
     /// 重置 debounce 计数是为了避免下一 tick 立即再次决策.
     pub fn mark_online(&mut self, cpu_id: u32, online: bool) {
+        self.mark_online_at(cpu_id, online, 0);
+    }
+
+    /// 同 [`mark_online`], 附带决策时刻 (unix ms).
+    /// disable 成功时打点, 驱动 [`DISABLE_REENABLE_COOLDOWN_MS`] 防振荡冷却;
+    /// enable 成功时清零冷却.
+    pub fn mark_online_at(&mut self, cpu_id: u32, online: bool, now_ms: i64) {
         let entry = self.per_cpu.entry(cpu_id).or_default();
         entry.online = online;
         entry.enable_debounce = 0;
         entry.disable_debounce = 0;
+        entry.disabled_at_unix_ms = if online { 0 } else { now_ms };
     }
 
     /// 当前所有 cpu 的 online 状态 (bitmask, bit N = cpu N online?)
@@ -357,6 +435,33 @@ impl ThresholdDecider {
 
     pub fn set_thresholds(&mut self, t: HotplugThresholds) {
         self.thresholds = t;
+    }
+
+    /// 更新 keep_cores 白名单 (任务 A: 屏幕状态切换 / 配置热更新时每 tick 调用).
+    ///
+    /// - 内部走 [`CpuAllowList::from_keep_cores`], cpu0 恒保护 + 至少 2 核的约束在那里兜底
+    /// - 返回 true 表示白名单发生了变化 (调用方可记日志)
+    /// - 变化时重置所有 per-cpu debounce, 防止旧白名单下的计数污染新决策
+    ///   (新保护核的下 tick 强制在线逻辑会接管拉起)
+    pub fn set_keep_cores(&mut self, cores: &[u32]) -> bool {
+        let new_list = CpuAllowList::from_keep_cores(cores);
+        if new_list.additional_protected == self.allow_list.additional_protected {
+            return false;
+        }
+        for st in self.per_cpu.values_mut() {
+            st.disable_debounce = 0;
+            st.enable_debounce = 0;
+        }
+        self.allow_list = new_list;
+        true
+    }
+
+    /// 当前生效的白名单快照 (升序), 用于 state.yaml 输出与日志
+    pub fn active_keep_cores(&self) -> Vec<u32> {
+        let mut v: Vec<u32> = self.allow_list.additional_protected.iter().copied().collect();
+        if !v.contains(&0) { v.push(0); } // is_protected 对 cpu0 恒真, 保持输出一致
+        v.sort_unstable();
+        v
     }
 
     pub fn allow_list(&self) -> &CpuAllowList {
@@ -390,9 +495,10 @@ mod tests {
     #[test]
     fn idle_above_off_threshold_disables() {
         let mut d = ThresholdDecider::new(HotplugThresholds::default(), CpuAllowList::default());
-        for _ in 0..3 {
-            d.tick(&[load(2, 30.0)], 50.0, false, true, false, 0);
-        }
+        // Bug1 collect-only 改造后 per_cpu.online 由 mod.rs mark; 单测需要预置在线状态.
+        // 且必须全核预置 (current_online=8 > min_online=4), 否则 disable 被
+        // 漏洞2 最少在线守卫挡住 — 这正是本套件在 collect-only 改造后失绿的根因.
+        for i in 0..8u32 { d.mark_online(i, true); }
         for tick in 1..=DISABLE_DEBOUNCE_TICKS + 1 {
             let dec = d.tick(&[load(2, 99.0)], 50.0, false, true, false, 0);
             if tick == DISABLE_DEBOUNCE_TICKS {
@@ -430,5 +536,110 @@ mod tests {
         }
         let dec = d.tick(&[load(5, 10.0)], 50.0, false, true, false, 0);
         assert!(!dec.to_enable.contains(&5), "single tick spike should not re-enable");
+    }
+
+    // ============ 任务 A: 可配置保留核心 (keep_cores) ============
+
+    #[test]
+    fn from_keep_cores_cpu0_always_included() {
+        let al = CpuAllowList::from_keep_cores(&[]);
+        assert!(al.is_protected(0), "boot CPU must always be protected");
+    }
+
+    #[test]
+    fn keep_cores_minimum_two_online_protected() {
+        // 空白名单 / 只勾一个核心时自动兜底到 {cpu0, cpu1} (任务 A 安全约束 #2)
+        assert!(CpuAllowList::from_keep_cores(&[]).is_protected(1));
+        assert!(CpuAllowList::from_keep_cores(&[0]).is_protected(1));
+        // 只勾一个非 boot 核心时: 保护集 = {cpu0, 该核}, 已满足"至少 2 个保护核"
+        let al = CpuAllowList::from_keep_cores(&[4]);
+        assert!(al.is_protected(0) && al.is_protected(4));
+        assert!(!al.is_protected(1));
+        assert!(!al.is_protected(3));
+    }
+
+    #[test]
+    fn from_keep_cores_drops_out_of_range() {
+        let al = CpuAllowList::from_keep_cores(&[0, 1, 99]);
+        assert!(al.is_protected(0) && al.is_protected(1));
+        assert!(!al.is_protected(99));
+        assert_eq!(al.additional_protected.len(), 2);
+    }
+
+    #[test]
+    fn screen_on_six_cores_only_six_and_seven_can_sleep() {
+        let mut d = ThresholdDecider::new(HotplugThresholds::default(),
+            CpuAllowList::from_keep_cores(&[0, 1, 2, 3, 4, 5]));
+        // 预置全部核心在线 (模拟 mark 已经由 mod.rs 完成)
+        for i in 0..8u32 { d.mark_online(i, true); }
+        let loads = || vec![
+            load(0, 10.0), load(1, 10.0), load(2, 10.0),
+            load(3, 10.0), load(4, 10.0), load(5, 10.0),
+            load(6, 99.0), load(7, 50.0),
+        ];
+        // 亮屏白名单 [0..5]: 即使 cpu6 长时间空闲, 也只有 6/7 允许出现在关核候选里;
+        // 且 debounce 攒满 DISABLE_DEBOUNCE_TICKS 后 cpu6 才真正进入 to_disable.
+        for tick in 1..=DISABLE_DEBOUNCE_TICKS + 1 {
+            let dec = d.tick(&loads(), 50.0, false, true, false, 0);
+            assert!(dec.to_disable.iter().all(|&c| c == 6),
+                "only non-protected core (cpu6) can be disabled, got {:?}", dec.to_disable);
+            if tick == DISABLE_DEBOUNCE_TICKS {
+                assert!(dec.to_disable.contains(&6));
+            }
+        }
+    }
+
+    #[test]
+    fn protected_core_marked_offline_is_force_enabled() {
+        // 场景: 息屏用 [0,1], cpu3 被关; 切亮屏白名单 [0..5] → cpu3 必须立即拉起
+        let mut d = ThresholdDecider::new(HotplugThresholds::default(), CpuAllowList::default());
+        d.mark_online(3, false); // 模拟息屏时被关
+        assert!(d.set_keep_cores(&[0, 1, 2, 3, 4, 5]), "whitelist change should be detected");
+        let dec = d.tick(&[load(3, 90.0)], 45.0, false, true, false, 0);
+        assert!(dec.to_enable.contains(&3), "protected offline core must be force-enabled");
+    }
+
+    #[test]
+    fn set_keep_cores_idempotent_change_detection() {
+        let mut d = ThresholdDecider::new(HotplugThresholds::default(), CpuAllowList::default());
+        assert!(d.set_keep_cores(&[0, 1, 2, 3, 4, 5]));
+        assert!(!d.set_keep_cores(&[5, 4, 3, 2, 1, 0]), "same set in any order = no change");
+        assert!(d.set_keep_cores(&[0, 1]));
+    }
+
+    #[test]
+    fn active_keep_cores_reflects_current_whitelist() {
+        let mut d = ThresholdDecider::new(HotplugThresholds::default(), CpuAllowList::default());
+        d.set_keep_cores(&[0, 2, 5]);
+        // 3 个有效保护核 (>= 2), 不触发兜底; cpu0 即使没写在配置里也永远在内
+        assert_eq!(d.active_keep_cores(), vec![0, 2, 5]);
+        d.set_keep_cores(&[]);
+        assert_eq!(d.active_keep_cores(), vec![0, 1]); // 空配置 → {cpu0,cpu1} 兜底
+    }
+
+    #[test]
+    fn disable_reenable_cooldown_blocks_spurious_enable() {
+        // 场景 (真机观测到的振荡): 我方关掉 cpu6 后, /proc/stat 中该核统计冻结,
+        // util 读数失真地高 → 修复前下一 tick 就被重新 enable, 形成 关↔开 抖动.
+        let mut d = ThresholdDecider::new(HotplugThresholds::default(),
+            CpuAllowList::from_keep_cores(&[0, 1, 2, 3, 4, 5]));
+        for i in 0..8u32 { d.mark_online_at(i, true, 10_000); }
+        // t=10_000..10_800: cpu6 关核 (debounce 攒满 5 tick 后进入 to_disable)
+        for k in 0..DISABLE_DEBOUNCE_TICKS {
+            let dec = d.tick(&[load(6, 99.0)], 45.0, false, true, false, 10_000 + (k as i64) * 200);
+            if k == DISABLE_DEBOUNCE_TICKS - 1 {
+                assert!(dec.to_disable.contains(&6));
+            }
+        }
+        d.mark_online_at(6, false, 10_800);
+        // t=10_200 (1 tick 后): 失真的 util=100 不允许触发 enable
+        let dec = d.tick(&[load(6, 100.0)], 45.0, false, true, false, 10_200);
+        assert!(!dec.to_enable.contains(&6), "spurious re-enable within cooldown");
+        // t=12_500/12_700 (冷却窗 1500ms 已过): 连续两次高负载采样正常唤醒
+        // 注意 load() 第二参是 idle → util = 100-idle
+        let dec = d.tick(&[load(6, 0.0)], 45.0, false, true, false, 12_500);
+        assert!(!dec.to_enable.contains(&6), "enable debounce needs 2 ticks");
+        let dec = d.tick(&[load(6, 0.0)], 45.0, false, true, false, 12_700);
+        assert!(dec.to_enable.contains(&6), "must be enable-able after cooldown");
     }
 }

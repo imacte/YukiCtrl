@@ -310,6 +310,18 @@ pub(crate) fn screen_push(on: bool) {
     }
 }
 
+/// 轻量读取屏幕状态 (hotplug 200ms tick 专用).
+///
+/// 与 [`sense_now`] 不同: **不**触发 CPU 快照刷新 (hotplug 自己拉 idle_snapshot),
+/// 只锁 O(1). sense_snapshot 尚未初始化 / 锁中毒时返回 `true` —
+/// 读不到屏幕状态按"亮屏"处理是保守方向 (亮屏白名单更大, 全开倾向, 不丢性能).
+pub fn screen_on_now() -> bool {
+    sense_snapshot_handle()
+        .lock()
+        .map(|g| g.screen_on)
+        .unwrap_or(true)
+}
+
 // =================================================================
 //  4. 单元测试 (不依赖文件系统, 纯内存 push/pull)
 // =================================================================

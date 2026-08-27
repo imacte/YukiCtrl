@@ -33,7 +33,7 @@ provide('isDark', isDark)
       </router-link>
       <router-link to="/log" class="nav-item">
         <van-icon name="notes-o" size="22" />
-        <span>设置</span>
+        <span>日志</span>
       </router-link>
     </nav>
   </van-config-provider>
